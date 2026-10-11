@@ -1,0 +1,20 @@
+{
+  "id": "etoac-saponification-arrhenius",
+  "title": "乙酸乙酯皂化反应观测速率常数的 Arrhenius 复现",
+  "model": "k = A * exp(-Ea / (R * T))",
+  "R_J_per_mol_K": 8.314462618,
+  "temperature": "temperature_c 为摄氏度。拟合时使用开尔文。",
+  "rate": "使用 k_per_s。k_per_min 是同一观测换算成分钟后的数值。",
+  "calibration": "temperature_c <= 50",
+  "holdout": "temperature_c > 50",
+  "fit": "只用标定行，对 ln(k_per_s) 与 1/T_kelvin 做普通最小二乘。",
+  "outputs": {
+    "metrics.json": ["ea_j_mol", "ln_a", "train_ids", "test_ids", "holdout_ln_rmse"],
+    "predictions.csv": ["run_id", "temperature_c", "k_hat_per_s"]
+  },
+  "acceptance": {
+    "holdout_ln_rmse_max": 0.02,
+    "train_ids_must_match_calibration": true,
+    "predictions_must_match_reported_parameters": true
+  }
+}

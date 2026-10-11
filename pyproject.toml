@@ -1,0 +1,5 @@
+[project]
+name = "exp-repro"
+version = "0.1.0"
+description = "乙酸乙酯皂化实验复现与验收"
+requires-python = ">=3.10"

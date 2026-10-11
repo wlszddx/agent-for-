@@ -1,0 +1,19 @@
+{
+  "id": "phosphate-calibration",
+  "title": "磷酸盐标准曲线复现",
+  "model": "absorbance_net = slope * concentration_mg_l + intercept",
+  "absorbance": "absorbance_net = absorbance_raw - blank",
+  "concentration": "使用 concentration_mg_l。concentration_ug_l 是同一标准序列换算成微克每升。",
+  "calibration": "concentration_mg_l <= 10",
+  "holdout": "concentration_mg_l > 10",
+  "fit": "只用标定行，对净吸光度与 concentration_mg_l 做普通最小二乘。",
+  "outputs": {
+    "metrics.json": ["slope", "intercept", "train_ids", "test_ids", "holdout_rmse"],
+    "predictions.csv": ["run_id", "concentration_mg_l", "absorbance_hat"]
+  },
+  "acceptance": {
+    "holdout_rmse_max": 0.005,
+    "train_ids_must_match_calibration": true,
+    "predictions_must_match_reported_parameters": true
+  }
+}
