@@ -2,7 +2,7 @@
   "mcpServers": {
     "repro": {
       "command": "py",
-      "args": ["-3", "serve_mcp.py", "--experiment", "hydrolysis", "--case", "celsius"]
+      "args": ["-3", "serve_mcp.py"]
     }
   }
 }

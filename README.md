@@ -1,35 +1,9 @@
-# 实验复现
+# 实验报告判断
 
-用 Agnes 修改复现稿，AGH 通过 MCP 调用工具。每份实验放在 `experiments/<名称>/`，自带协议、测量表、复现稿和验证器。运行、隔离、写入次数和证据目录不包含具体公式。
+用 Agnes 阅读溶液反应动力学实验报告，AGH 通过 MCP 调用工具。只核对速率常数、活化能和温度做法。溶液反应查 NDRL/NIST 溶液动力学库，酶反应查 SABIO-RK。用量、温度或测定方法对不上时，数值不可比；活化能只有文献写明与用量无关时才可以跨用量比较。温度做法不随用量改变。活化能也可以用报告自己的数据按 Arrhenius 公式重算。
 
-当前有两份实验：
-
-| 实验 | 协议 | 失败稿 |
-| --- | --- | --- |
-| hydrolysis | 乙酸乙酯皂化速率的 Arrhenius 拟合 | celsius、leakage、minute_rate |
-| phosphate | 磷酸盐标准曲线 | leakage、microgram |
-
-`correct` 必须通过。其余稿必须被拒绝。验证器重算留出误差、标定划分和参数一致性，脚本自报的误差不算通过。
+报告可以是项目目录中的 txt、md、csv、docx、pdf，也可以是对话里的照片。模型先抽出报告中的主张，再按主张检索并打开页面。程序对打开的正文做句向量检索，判断只能引用选中的原句。方法和条件由程序核对，数字和算式由程序计算。证据不足或文献彼此不一致时，不把报告判为错误。
 
 ## 运行
 
-在项目根目录：
-
-```text
-py -3 -m repro list
-py -3 -m repro check
-py -3 -m repro export-data
-```
-
-接入 Agnes 后指定实验和稿：
-
-```text
-set AGNES_API_KEY=你的密钥
-py -3 -m repro run --experiment phosphate --case microgram
-```
-
-模型名默认 `agnes-2.5-flash`，可用 `AGNES_MODEL` 和 `AGNES_BASE_URL` 覆盖。证据写在 `evidence/`。
-
-AGH 使用 `agh.mcp.json`。换实验时改其中的 `--experiment` 和 `--case`。任务方法在 `skills/reproduce-experiment/SKILL.md`。
-
-新增一份实验时，在 `experiments/<名称>/` 放 `protocol.json`、`spec.py` 和 `cases/<稿>/analysis.py`。`spec.py` 提供 `measurements`、`verify`、`residuals`、`SEALED_TOKENS`、`INSTRUCTIONS`。名为 `correct` 的稿应能通过验收。
+AGH 注册 `serve_mcp.py`。任务方法在 `skills/reproduce-experiment/SKILL.md`。判断结果由 `finish_review` 写入 `evidence/`，该目录不提交。

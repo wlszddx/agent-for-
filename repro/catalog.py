@@ -46,11 +46,13 @@ class Experiment:
     def measurements(self):
         return self.module.measurements()
 
-    def verify(self, execution):
-        return self.module.verify(execution, self.protocol(), self.measurements())
+    def verify(self, execution, rows=None):
+        table = self.measurements() if rows is None else rows
+        return self.module.verify(execution, self.protocol(), table)
 
-    def residuals(self, execution):
-        return self.module.residuals(execution, self.measurements())
+    def residuals(self, execution, rows=None):
+        table = self.measurements() if rows is None else rows
+        return self.module.residuals(execution, table)
 
     def sealed_tokens(self):
         return tuple(self.module.SEALED_TOKENS)

@@ -2,21 +2,23 @@ import json
 import sys
 
 from repro import __version__
+from repro.session import EvidenceLog
 from repro.tools import TOOL_SPECS, dispatch
 
 
 def serve(job):
+    log = EvidenceLog(job)
     while True:
         message = _read()
         if message is None:
             return
         if message.get("id") is None:
             continue
-        response = _handle(job, message)
+        response = _handle(job, message, log)
         _write(response)
 
 
-def _handle(job, message):
+def _handle(job, message, log):
     method = message.get("method")
     request_id = message.get("id")
     if method == "initialize":
@@ -45,6 +47,10 @@ def _handle(job, message):
         name = params.get("name")
         arguments = params.get("arguments") or {}
         result = dispatch(job, name, arguments)
+        try:
+            log.record(name, arguments, result)
+        except OSError:
+            pass
         return _ok(
             request_id,
             {
