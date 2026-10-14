@@ -57,7 +57,6 @@
 | 或代码压缩包 | 【上传不含 Key、不含 evidence/ 的源码包，建议名：U348-智能鳄梨-kinetics_audit.zip】 |
 | 入口说明 | 仓库根目录；MCP 入口 `mcp_server.py`；包名 `kinetics_audit` |
 | 本地自检 | `py -m unittest tests.test_harness tests.test_eval_metrics -q`；`py -m eval.run` |
-| 演示材料 | `docs/DEMO.md`；报告样例 `eval/gold/reports/` |
 
 **打包前确认已排除：** Agnes Key、`.env`、`evidence/`、含密钥截图。AGH 源码不并入本仓库。
 
@@ -98,7 +97,7 @@
 
 1. 将任务方法指向仓库内：`skills/kinetics-report-audit/SKILL.md`。  
 2. 在 AGH 会话中启用该 skill（按 AGH 界面「技能 / 方法」加载方式操作）。  
-3. 新建会话，粘贴实验名称与报告正文（演示可用 `eval/gold/reports/` 中的文件），按 skill 步骤跑至 `finish_review`。  
+3. 新建会话，给出实验名称与报告正文，按 skill 步骤跑至 `finish_review`。  
 4. 结果写入项目 `evidence/`（已 gitignore）；比赛运行证据从 AGH 会话导出后按赛方要求单独上传。
 
 ### 4.4 模型账号（AGH 内）
@@ -128,9 +127,9 @@
 
 1. 本说明（或官网表单中对应字段原文）  
 2. 代码仓库链接或源码包  
-3. AGH 完整会话导出（至少案 A 配制+速率、案 B 自由基不误判，见 `docs/DEMO.md`）  
+3. AGH 完整会话导出（含抽主张、检索、判断与汇总）  
 4. 对应 `finish_review` 的 `*-review.json`（脱敏，不含 Key）  
-5. （可选）`py -m eval.run` 输出截图：主张级 Claim Accuracy / False Conviction Rate / Missed Error Rate  
+5. （可选）`py -m eval.run` 输出：主张级 Claim Accuracy / False Conviction Rate / Missed Error Rate  
 
 填写【】并确认仓库链接后即可提交。
 

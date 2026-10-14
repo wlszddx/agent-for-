@@ -23,4 +23,4 @@ py -m eval.run --gold path/to/cases.json
 
 金标格式见 [`gold/cases.json`](gold/cases.json)。扩展时为每条主张填写 `gold_status`，并给出 `report`（或 `report_file`）、`claim`，以及检索类主张的 `evidence` / `judge`（或 `expect_abstain`）。
 
-完整报告文本在 [`gold/reports/`](gold/reports/)，现场演示顺序见 [`../docs/DEMO.md`](../docs/DEMO.md)。
+完整报告文本在 [`gold/reports/`](gold/reports/)，供金标 `report_file` 引用。

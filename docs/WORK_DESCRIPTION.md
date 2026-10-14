@@ -41,7 +41,7 @@
 
 ### 2.4 工程与评测
 
-本地以单元测试与金标评测回归：`py -m unittest tests.test_harness tests.test_eval_metrics`；`py -m eval.run` 输出主张级 Claim Accuracy、False Conviction Rate（误定罪率）、Missed Error Rate（漏检错率）与 Macro-F1。现场演示材料见 `docs/DEMO.md` 与 `eval/gold/reports/`。
+本地以单元测试与金标评测回归：`py -m unittest tests.test_harness tests.test_eval_metrics`；`py -m eval.run` 输出主张级 Claim Accuracy、False Conviction Rate（误定罪率）、Missed Error Rate（漏检错率）与 Macro-F1。
 
 ## 三、核心功能
 
@@ -62,10 +62,10 @@
 5. **可量化准确度**：不以整份报告对错一个数交差，而以主张级四态（supports / contradicts / not_enough / not_comparable）做金标对照，突出 False Conviction Rate 作为安全主指标。  
 6. **赛道合规**：运行阶段仅使用 Agnes 模型；Key 只存 AGH 凭据；MCP 无密钥 stdio；不把 AGH 源码并入作品仓库。
 
-## 五、使用与演示摘要
+## 五、使用摘要
 
-用户给出实验名称与报告后，Agnes 按 Skill 自动调用 MCP 工具完成审核。演示建议三案：配制错误叠加速率偏差（展示追因）、羟基自由基文献陷阱（展示不误判）、摄氏度直接拟合（展示方法主张）。输出可读、可导出、可复现自检，满足“任务规划—工具调用—执行反馈—结果验证—异常处理”的赛事闭环要求。
+用户给出实验名称与报告后，Agnes 按 Skill 自动调用 MCP 工具完成审核。输出可读、可导出、可复现自检，满足“任务规划—工具调用—执行反馈—结果验证—异常处理”的赛事闭环要求。
 
 ---
 
-（全文约 2200 字，远低于 5000 字上限；若表单按字符计，亦可整段粘贴。）
+（全文低于 5000 字上限；可整段粘贴。）

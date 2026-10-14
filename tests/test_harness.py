@@ -33,7 +33,7 @@ def _open_page(job, url, title, text, claim_id, query):
 
 
 def _kinetic(quote):
-    return {
+        return {
         "id": "v1",
         "kind": "value",
         "quote": quote,
@@ -41,7 +41,7 @@ def _kinetic(quote):
         "dosage": "0.10 mol/L",
         "temperature": "25摄氏度",
         "method": "电导法",
-    }
+        }
 
 
 class HarnessTest(unittest.TestCase):
@@ -128,7 +128,7 @@ class HarnessTest(unittest.TestCase):
             {
                 "claim_id": "m1",
                 "verdict": "not_enough",
-                "url": "https://example.test/arrhenius",
+            "url": "https://example.test/arrhenius",
                 "sentence_id": relevant["id"],
                 "literature_span": "热力学温度",
                 "explanation": "文献句讨论的是通用拟合要求，还需要更多上下文。",

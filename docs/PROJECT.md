@@ -33,7 +33,7 @@ py -3 -m unittest tests.test_harness tests.test_eval_metrics
 py -3 -m eval.run
 ```
 
-单元测试使用固定的报告正文和检索结果，不调用在线模型。`eval/run` 用 `eval/gold/cases.json` 做主张级金标对照，报告 Claim Accuracy、False Conviction Rate（误定罪）、Missed Error Rate（漏检错）与 Macro-F1；不替代 AGH 在线评测，但用于量化程序判决准确度。现场演示按 `docs/DEMO.md`，粘贴材料在 `eval/gold/reports/`。
+单元测试使用固定的报告正文和检索结果，不调用在线模型。`eval/run` 用 `eval/gold/cases.json` 做主张级金标对照，报告 Claim Accuracy、False Conviction Rate（误定罪）、Missed Error Rate（漏检错）与 Macro-F1；不替代 AGH 在线评测，但用于量化程序判决准确度。
 
 接入 AGH 的顺序：
 

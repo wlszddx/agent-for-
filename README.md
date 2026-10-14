@@ -12,6 +12,8 @@
 
 AGH 注册 `mcp_server.py`（见 `agh.mcp.json`）。任务方法在 `skills/kinetics-report-audit/SKILL.md`。判断结果由 `finish_review` 写入 `evidence/`，该目录不提交。
 
+把报告 PDF 放在本仓库根目录，AGH 工作区指向本仓库；会话中让 Agnes 调用 `read_report`（`path` 用相对文件名，如 `报告.pdf`）。
+
 本地自检：
 
 ```text
@@ -24,5 +26,4 @@ py -m unittest tests.test_harness tests.test_eval_metrics -v
 py -m eval.run
 ```
 
-现场演示脚本与可粘贴报告：[`docs/DEMO.md`](docs/DEMO.md)、[`eval/gold/reports/`](eval/gold/reports/)。  
-申报材料（队伍信息 / 简介 / 运行说明 / 模型声明）：[`docs/SUBMISSION.md`](docs/SUBMISSION.md)。
+申报材料：[`docs/SUBMISSION.md`](docs/SUBMISSION.md)。
