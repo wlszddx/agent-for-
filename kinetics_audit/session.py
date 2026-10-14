@@ -2,22 +2,28 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from repro.tools import TOOL_SPECS, dispatch
+from kinetics_audit.tools import TOOL_SPECS, dispatch
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = (
-    "你是溶液反应动力学报告判断执行器。只判断速率常数、活化能和温度做法。"
-    "先抽出主张。溶液速率常数用 search_solution_kinetics，酶动力学用 search_enzyme_kinetics，再用 select_evidence。"
-    "公开网页仍可用 search_references，同一主张只查一次。不可比或证据不足时调用 retry_claim，程序会带上用量、温度和测定方法再查一轮。"
-    "同一反应的速率常数和活化能不随初始用量改变，用量不同仍可比较。电导法用量高于 0.20 mol/L 时条件不合理。"
-    "方法判断要给出文献句中的做法 literature_span。文献句没有讨论报告里的这一步时，不记为错误。"
-    "计算主张 expression 用 arrhenius 重算活化能，用 rate 时按反应式和报告里的速率常数、浓度计算应有速率。反应式推不出速率常数。这两种计算不要检索。"
-    "证据不足是合格结果。最后调用 finish_review。"
+    "你是溶液反应动力学报告判断执行器。审报告对错与条件，不替代动力学拟合软件。"
+    "先 propose_candidates，再在候选句内 extract_claims（带 candidate_id）；不要编候选外原句。"
+    "有母液浓度、移取体积和定容体积时必须抽 dilution；有等浓度假设时必须抽 stoichiometry。"
+    "select_evidence 只返回通过同一反应、测定方法与温度硬过滤的句子；若 abstain 不要硬判错。"
+    "溶液速率常数用 search_solution_kinetics，酶动力学用 search_enzyme_kinetics；公开网页可用 search_references，失败时用 offline。"
+    "同一反应的速率常数和活化能不随初始用量改变。电导法用量高于 0.20 mol/L 时条件不合理。"
+    "judge_claim 必须给 verdict，并尽量写 explanation；有错时写 improvement。"
+    "方法主张上，程序判错而你给 supports 或 not_enough 时记为证据不足。"
+    "数值与 dilution、stoichiometry、arrhenius、rate 由程序验算，不要检索。"
+    "证据不足是合格结果。最后 finish_review 并写 summary。"
 )
-USER = "根据给出的实验报告判断错误，并提出改进方法。"
+USER = (
+    "根据给出的实验报告判断错误，并提出改进方法。"
+    "注意配制计量是否算错、测定方法是否对齐，以及是否因此导致动力学结果偏差。"
+)
 
 
-def run_session(job, client, max_steps=12):
+def run_session(job, client, max_steps=16):
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": USER},

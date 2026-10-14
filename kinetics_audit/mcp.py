@@ -1,9 +1,9 @@
 import json
 import sys
 
-from repro import __version__
-from repro.session import EvidenceLog
-from repro.tools import TOOL_SPECS, dispatch
+from kinetics_audit import __version__
+from kinetics_audit.session import EvidenceLog
+from kinetics_audit.tools import TOOL_SPECS, dispatch
 
 
 def serve(job):
@@ -27,7 +27,7 @@ def _handle(job, message, log):
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "repro", "version": __version__},
+                "serverInfo": {"name": "kinetics_audit", "version": __version__},
             },
         )
     if method == "tools/list":

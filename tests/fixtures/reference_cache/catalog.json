@@ -1,0 +1,34 @@
+{
+  "pages": [
+    {
+      "title": "乙酸乙酯皂化电导法参考值",
+      "url": "https://example.test/offline/saponification-conductivity",
+      "tags": ["皂化", "乙酸乙酯", "电导", "速率常数", "活化能", "saponification", "conductivity"],
+      "text": "乙酸乙酯与氢氧化钠的皂化反应可用电导法测定。在 0.050 mol/L、25摄氏度、电导法下皂化反应速率常数为 0.100 L/(mol·s)。在 0.10 mol/L、25摄氏度、电导法下皂化反应活化能约为 48.5 kJ/mol。拟合 Arrhenius 式必须使用热力学温度，不能把摄氏温度直接代入。"
+    },
+    {
+      "title": "乙酸乙酯皂化分光光度法参考值",
+      "url": "https://example.test/offline/saponification-spectrophotometry",
+      "tags": ["皂化", "乙酸乙酯", "分光", "分光光度", "速率常数", "活化能", "spectrophot"],
+      "text": "乙酸乙酯皂化也可用分光光度法跟踪。在 0.050 mol/L、25摄氏度、分光光度法下皂化反应速率常数为 0.095 L/(mol·s)。在 0.10 mol/L、25摄氏度、分光光度法下皂化反应活化能约为 47.0 kJ/mol。测定方法与电导法不同，不能把电导法文献值直接当作分光法结果。"
+    },
+    {
+      "title": "乙酸乙酯皂化停流法参考值",
+      "url": "https://example.test/offline/saponification-stopped-flow",
+      "tags": ["皂化", "乙酸乙酯", "停流", "stopped flow", "速率常数", "stopped-flow"],
+      "text": "快速皂化可用停流法测定。在 0.010 mol/L、25摄氏度、停流法下皂化反应速率常数为 0.12 L/(mol·s)。停流法与电导法、分光光度法不是同一测定方法，条件对不上时数值不可比。"
+    },
+    {
+      "title": "羟基自由基与乙酸乙酯脉冲辐解",
+      "url": "https://example.test/offline/radical-ethyl-acetate",
+      "tags": ["乙酸乙酯", "ethyl acetate", "羟基自由基", "脉冲辐解", "radical", "pulse"],
+      "text": "NDRL/NIST 溶液动力学库记录。反应 ·OH + CH3CO2C2H5。At 25 °C the conductivity method for ·OH + ethyl acetate gives k = 4.0E8 L/(mol·s)。Experimental method: Pulse radiolysis. Analytical technique: Vis-UV absorption."
+    },
+    {
+      "title": "阿伦尼乌斯温度用法",
+      "url": "https://example.test/offline/arrhenius-temperature",
+      "tags": ["Arrhenius", "阿伦尼乌斯", "热力学温度", "摄氏温度", "拟合"],
+      "text": "实验使用玻璃烧杯装样品。拟合必须使用热力学温度，不能把摄氏温度直接代入。记录原始数据时可以记下摄氏温度，但代入公式前要换成开尔文。"
+    }
+  ]
+}

@@ -5,13 +5,19 @@ from pathlib import Path
 from unittest.mock import patch
 from xml.sax.saxutils import escape
 
-from repro.databases import enzyme_record, solution_links, solution_record
-from repro.guard import GuardError, check_source
-from repro.numbers import measurements, number_tokens
-from repro.report_file import extract_report, locate_report
-from repro.sandbox import execute
-from repro.search import useful_result
-from repro.tools import Job, dispatch
+import kinetics_audit.reference_store as reference_store
+from kinetics_audit.databases import enzyme_record, solution_links, solution_record
+from kinetics_audit.guard import GuardError, check_source
+from kinetics_audit.numbers import measurements, number_tokens
+from kinetics_audit.reference_store import offline_page, offline_search
+from kinetics_audit.report_file import extract_report, locate_report
+from kinetics_audit.sandbox import execute
+from kinetics_audit.search import fetch_page, search_web, useful_result
+from kinetics_audit.tools import Job, dispatch
+
+_FIXTURE_CACHE = Path(__file__).resolve().parent / "fixtures" / "reference_cache"
+reference_store._ROOT = _FIXTURE_CACHE
+reference_store._INDEX = None
 
 
 def _report(job, text, experiment="皂化反应"):
@@ -20,7 +26,7 @@ def _report(job, text, experiment="皂化反应"):
 
 def _open_page(job, url, title, text, claim_id, query):
     hit = {"title": title, "url": url, "excerpt": text[:80]}
-    with patch("repro.tools.search_web", return_value=[hit]), patch("repro.tools.fetch_page", return_value=text):
+    with patch("kinetics_audit.tools.search_web", return_value=[hit]), patch("kinetics_audit.tools.fetch_page", return_value=text):
         found = dispatch(job, "search_references", {"query": query, "claim_id": claim_id})
         opened = dispatch(job, "read_reference", {"url": url})
     return found, opened
@@ -85,14 +91,55 @@ class HarnessTest(unittest.TestCase):
                 "url": "https://example.test/arrhenius",
                 "sentence_id": relevant["id"],
                 "literature_span": "热力学温度",
+                "explanation": "报告把摄氏温度直接代入 Arrhenius 拟合。",
+                "improvement": "拟合前把摄氏温度换成热力学温度。",
             },
         )
         self.assertEqual(judged["judgment"]["status"], "contradicts")
         self.assertIn(report, judged["judgment"]["statement"])
         self.assertIn("摄氏温度直接代入", judged["judgment"]["statement"])
-        review = dispatch(job, "finish_review", {})
+        review = dispatch(
+            job,
+            "finish_review",
+            {"summary": "主要问题是温度单位用法；建议改用热力学温度再拟合。"},
+        )
         self.assertEqual(review["review"]["confirmed_errors"][0]["claim_id"], "m1")
+        self.assertEqual(review["review"]["confirmed_errors"][0]["improvement"], "拟合前把摄氏温度换成热力学温度。")
+        self.assertIn("热力学温度", review["review"]["summary"])
         self.assertFalse(review["review"]["insufficient"])
+
+    def test_method_model_can_keep_a_program_hit_as_insufficient(self):
+        job = Job.closed()
+        report = "本实验直接用摄氏温度拟合速率常数。"
+        _report(job, report)
+        dispatch(job, "extract_claims", {"claims": [{"id": "m1", "kind": "method", "quote": report, "slot": "摄氏温度"}]})
+        page = "拟合必须使用热力学温度，不能把摄氏温度直接代入。"
+        _open_page(job, "https://example.test/arrhenius", "阿伦尼乌斯公式", page, "m1", "Arrhenius 温度")
+        selected = dispatch(
+            job,
+            "select_evidence",
+            {"claim_id": "m1", "url": "https://example.test/arrhenius", "focus": "热力学温度 拟合"},
+        )
+        self.assertEqual(selected["focus"], "热力学温度 拟合")
+        relevant = next(item for item in selected["sentences"] if "热力学温度" in item["text"])
+        cautious = dispatch(
+            job,
+            "judge_claim",
+            {
+                "claim_id": "m1",
+                "verdict": "not_enough",
+                "url": "https://example.test/arrhenius",
+                "sentence_id": relevant["id"],
+                "literature_span": "热力学温度",
+                "explanation": "文献句讨论的是通用拟合要求，还需要更多上下文。",
+            },
+        )
+        self.assertEqual(cautious["judgment"]["status"], "not_enough")
+        self.assertEqual(cautious["judgment"]["reason"], "model_caution")
+        self.assertEqual(cautious["judgment"]["program_status"], "contradicts")
+        review = dispatch(job, "finish_review", {"summary": "温度做法证据不足，暂不判错。"})
+        self.assertFalse(review["review"]["confirmed_errors"])
+        self.assertEqual(review["review"]["insufficient"][0]["status"], "not_enough")
 
     def test_unrelated_method_wording_is_not_a_report_error(self):
         job = Job.closed()
@@ -177,12 +224,9 @@ class HarnessTest(unittest.TestCase):
         dispatch(bare, "extract_claims", {"claims": [_kinetic(report)]})
         _open_page(bare, "https://example.test/ea", "乙酸乙酯皂化", "皂化反应活化能约为 48.5 kJ/mol。", "v1", "活化能")
         picked = dispatch(bare, "select_evidence", {"claim_id": "v1", "url": "https://example.test/ea"})
-        skipped = dispatch(
-            bare,
-            "judge_claim",
-            {"claim_id": "v1", "verdict": "contradicts", "url": "https://example.test/ea", "sentence_id": picked["sentences"][0]["id"]},
-        )
-        self.assertEqual(skipped["judgment"]["status"], "not_comparable")
+        self.assertTrue(picked["abstain"])
+        self.assertFalse(picked["sentences"])
+        self.assertEqual(bare.judgments[-1]["status"], "not_comparable")
 
     def test_rate_constant_with_a_different_dosage_is_not_comparable(self):
         report = "在 0.10 mol/L、25摄氏度、电导法下测得速率常数为 0.020 s^-1。"
@@ -247,24 +291,17 @@ class HarnessTest(unittest.TestCase):
         dispatch(other, "extract_claims", {"claims": [claim]})
         _open_page(other, "https://example.test/hot", "电导", hotter, "v1", "saponification")
         picked = dispatch(other, "select_evidence", {"claim_id": "v1", "url": "https://example.test/hot"})
-        skipped = dispatch(
-            other,
-            "judge_claim",
-            {"claim_id": "v1", "verdict": "contradicts", "url": "https://example.test/hot", "sentence_id": picked["sentences"][0]["id"]},
-        )
-        self.assertEqual(skipped["judgment"]["status"], "not_comparable")
+        self.assertTrue(picked["abstain"])
+        self.assertFalse(picked["sentences"])
+        self.assertEqual(other.judgments[-1]["status"], "not_comparable")
         radical = "At 25 °C and 0.01 mol/L, Experimental method: Pulse radiolysis, k = 4.0E8 L/(mol·s)."
         third = Job.closed()
         _report(third, report)
         dispatch(third, "extract_claims", {"claims": [claim]})
         _open_page(third, "https://example.test/pulse", "辐解", radical, "v1", "ethyl acetate")
         picked = dispatch(third, "select_evidence", {"claim_id": "v1", "url": "https://example.test/pulse"})
-        blocked = dispatch(
-            third,
-            "judge_claim",
-            {"claim_id": "v1", "verdict": "contradicts", "url": "https://example.test/pulse", "sentence_id": picked["sentences"][0]["id"]},
-        )
-        self.assertEqual(blocked["judgment"]["status"], "not_comparable")
+        self.assertTrue(picked["abstain"])
+        self.assertEqual(third.judgments[-1]["status"], "not_comparable")
 
     def test_a_different_reaction_is_not_compared(self):
         report = "乙酸乙酯皂化。在 0.0101 mol/L、25℃、电导法下测得速率常数为 5.193 L/(mol·min)。"
@@ -278,13 +315,44 @@ class HarnessTest(unittest.TestCase):
         dispatch(job, "extract_claims", {"claims": [claim]})
         _open_page(job, "https://example.test/radical-k", "自由基", evidence, "v1", "ethyl acetate")
         selected = dispatch(job, "select_evidence", {"claim_id": "v1", "url": "https://example.test/radical-k"})
+        self.assertTrue(selected["abstain"])
+        self.assertFalse(selected["sentences"])
+        self.assertEqual(job.judgments[-1]["status"], "not_comparable")
+        self.assertEqual(job.judgments[-1]["reason"], "reaction")
+
+    def test_radical_family_without_plus_sign_is_still_blocked(self):
+        report = "在 0.0101 mol/L、25℃、电导法下测得速率常数为 5.193 L/(mol·min)。"
+        evidence = "Hydroxyl radical ethyl acetate rate constant at 25 °C by pulse radiolysis is 4.0E8 L/(mol·s)."
+        job = Job.closed()
+        _report(job, report, "乙酸乙酯皂化")
+        claim = _kinetic(report)
+        claim["quantity"] = "速率常数"
+        claim["dosage"] = "0.0101 mol/L"
+        claim["temperature"] = "25℃"
+        dispatch(job, "extract_claims", {"claims": [claim]})
+        _open_page(job, "https://example.test/radical-family", "自由基", evidence, "v1", "ethyl acetate")
+        selected = dispatch(job, "select_evidence", {"claim_id": "v1", "url": "https://example.test/radical-family"})
+        self.assertTrue(selected["abstain"])
+        self.assertFalse(selected["sentences"])
+        self.assertEqual(job.judgments[-1]["status"], "not_comparable")
+        self.assertIn(job.judgments[-1]["reason"], {"reaction", "conditions"})
+
+    def test_saponification_literature_naming_naoh_remains_comparable(self):
+        report = "乙酸乙酯皂化。在 0.10 mol/L、25摄氏度、电导法下测得活化能为 30 kJ/mol。"
+        evidence = "氢氧化钠与乙酸乙酯皂化反应，0.10 mol/L、25摄氏度、电导法下活化能约为 48.5 kJ/mol。"
+        job = Job.closed()
+        _report(job, report, "乙酸乙酯皂化")
+        dispatch(job, "extract_claims", {"claims": [_kinetic(report)]})
+        _open_page(job, "https://example.test/naoh-ea", "皂化", evidence, "v1", "皂化 活化能")
+        selected = dispatch(job, "select_evidence", {"claim_id": "v1", "url": "https://example.test/naoh-ea"})
+        self.assertTrue(selected["sentences"][0]["same_reaction"])
         judged = dispatch(
             job,
             "judge_claim",
-            {"claim_id": "v1", "verdict": "contradicts", "url": "https://example.test/radical-k", "sentence_id": selected["sentences"][0]["id"]},
+            {"claim_id": "v1", "verdict": "supports", "url": "https://example.test/naoh-ea", "sentence_id": selected["sentences"][0]["id"]},
         )
-        self.assertEqual(judged["judgment"]["status"], "not_comparable")
-        self.assertEqual(judged["judgment"]["reason"], "reaction")
+        self.assertEqual(judged["judgment"]["status"], "contradicts")
+        self.assertNotEqual(judged["judgment"].get("reason"), "reaction")
 
     def test_dictionary_pages_are_not_search_results(self):
         self.assertFalse(useful_result("速率_百度百科", "https://baike.baidu.com/item/%E9%80%9F%E7%8E%87/1181335"))
@@ -344,6 +412,180 @@ class HarnessTest(unittest.TestCase):
         contradicted = dispatch(other, "judge_claim", {"claim_id": "c1", "verdict": "supports"})
         self.assertEqual(contradicted["judgment"]["status"], "contradicts")
 
+    def test_dilution_concentration_is_recomputed_from_the_report(self):
+        good = "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.010 mol/L。"
+        job = Job.closed()
+        _report(job, good)
+        extracted = dispatch(
+            job,
+            "extract_claims",
+            {"claims": [{"id": "d1", "kind": "calculation", "quote": good, "expression": "dilution", "reported": "0.010"}]},
+        )
+        self.assertTrue(extracted["ok"], extracted)
+        judged = dispatch(job, "judge_claim", {"claim_id": "d1", "verdict": "supports"})
+        self.assertEqual(judged["judgment"]["status"], "supports")
+        self.assertAlmostEqual(judged["judgment"]["expected_working_concentration"], 0.01, places=6)
+        wrong = "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.050 mol/L。"
+        other = Job.closed()
+        _report(other, wrong)
+        dispatch(
+            other,
+            "extract_claims",
+            {"claims": [{"id": "d1", "kind": "calculation", "quote": wrong, "expression": "dilution", "reported": "0.050"}]},
+        )
+        contradicted = dispatch(other, "judge_claim", {"claim_id": "d1", "verdict": "supports", "improvement": "应按 0.010 mol/L 书写工作浓度。"})
+        self.assertEqual(contradicted["judgment"]["status"], "contradicts")
+        self.assertIn("配制计量错误", contradicted["judgment"]["statement"])
+        self.assertAlmostEqual(contradicted["judgment"]["expected_working_concentration"], 0.01, places=6)
+
+    def test_dilution_missing_volumes_returns_a_hint(self):
+        report = "用 0.100 mol/L 母液配成工作浓度 0.010 mol/L。"
+        job = Job.closed()
+        _report(job, report)
+        extracted = dispatch(
+            job,
+            "extract_claims",
+            {"claims": [{"id": "d1", "kind": "calculation", "quote": report, "expression": "dilution", "reported": "0.010"}]},
+        )
+        self.assertFalse(extracted["ok"])
+        self.assertEqual(extracted["rejected"][0]["error"], "dilution_missing_volumes")
+        self.assertIn("移取体积", extracted["rejected"][0]["hint"])
+
+    def test_offline_cache_serves_pages_when_web_fails(self):
+        self.assertTrue(offline_search("乙酸乙酯皂化 电导法 速率常数"))
+        self.assertIn("皂化", fetch_page("https://example.test/offline/saponification-conductivity"))
+        with patch("kinetics_audit.search._search_bing", side_effect=OSError("offline")):
+            found = search_web("乙酸乙酯皂化 电导法 速率常数")
+        self.assertTrue(found)
+        self.assertTrue(any(item.get("offline") for item in found))
+        self.assertTrue(any("saponification-conductivity" in item["url"] for item in found))
+
+    def test_offline_radical_page_does_not_convict_saponification(self):
+        report = "乙酸乙酯皂化。在 0.050 mol/L、25摄氏度、电导法下测得速率常数为 0.020 L/(mol·s)。"
+        job = Job.closed()
+        _report(job, report, "乙酸乙酯皂化")
+        claim = {
+            "id": "v1",
+            "kind": "value",
+            "quote": "在 0.050 mol/L、25摄氏度、电导法下测得速率常数为 0.020 L/(mol·s)。",
+            "quantity": "速率常数",
+            "dosage": "0.050 mol/L",
+            "temperature": "25摄氏度",
+            "method": "电导法",
+        }
+        dispatch(job, "extract_claims", {"claims": [claim]})
+        radical = offline_page("https://example.test/offline/radical-ethyl-acetate")
+        self.assertIn("·OH", radical)
+        _open_page(job, "https://example.test/offline/radical-ethyl-acetate", "自由基", radical, "v1", "乙酸乙酯")
+        selected = dispatch(job, "select_evidence", {"claim_id": "v1", "url": "https://example.test/offline/radical-ethyl-acetate"})
+        self.assertTrue(selected["abstain"])
+        self.assertFalse(selected["sentences"])
+        self.assertGreater(selected["filtered_out"], 0)
+        review = dispatch(job, "finish_review", {})
+        self.assertFalse(review["review"]["confirmed_errors"])
+        self.assertEqual(review["review"]["insufficient"][0]["status"], "not_comparable")
+
+    def test_stoichiometry_equal_initial_requires_the_claim(self):
+        equation = "CH3COOC2H5 + NaOH → CH3COONa + C2H5OH"
+        claimed = f"反应式 {equation}。等浓度下乙酸乙酯 0.020 mol/L，氢氧化钠 0.010 mol/L。"
+        job = Job.closed()
+        _report(job, claimed)
+        extracted = dispatch(
+            job,
+            "extract_claims",
+            {
+                "claims": [
+                    {
+                        "id": "s1",
+                        "kind": "calculation",
+                        "quote": claimed,
+                        "expression": "stoichiometry",
+                        "equation": equation,
+                        "reported": "0.020",
+                    }
+                ]
+            },
+        )
+        self.assertTrue(extracted["ok"], extracted)
+        judged = dispatch(job, "judge_claim", {"claim_id": "s1", "verdict": "contradicts"})
+        self.assertEqual(judged["judgment"]["status"], "contradicts")
+        silent = f"反应式 {equation}。乙酸乙酯 0.020 mol/L，氢氧化钠 0.010 mol/L。"
+        other = Job.closed()
+        _report(other, silent)
+        dispatch(
+            other,
+            "extract_claims",
+            {
+                "claims": [
+                    {
+                        "id": "s1",
+                        "kind": "calculation",
+                        "quote": silent,
+                        "expression": "stoichiometry",
+                        "equation": equation,
+                        "reported": "0.020",
+                    }
+                ]
+            },
+        )
+        skipped = dispatch(other, "judge_claim", {"claim_id": "s1", "verdict": "contradicts"})
+        self.assertEqual(skipped["judgment"]["status"], "not_enough")
+        review = dispatch(other, "finish_review", {})
+        self.assertFalse(review["review"]["confirmed_errors"])
+        self.assertEqual(review["review"]["insufficient"][0]["status"], "not_enough")
+
+    def test_metering_error_and_value_error_produce_causal_notes(self):
+        equation = "CH3COOC2H5 + NaOH → CH3COONa + C2H5OH"
+        report = (
+            f"反应式 {equation}。取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.050 mol/L。"
+            "在 0.050 mol/L、25摄氏度、电导法下测得速率常数为 0.020 L/(mol·s)。"
+        )
+        evidence = "在 0.050 mol/L、25摄氏度、电导法下皂化反应速率常数为 0.100 L/(mol·s)。"
+        job = Job.closed()
+        _report(job, report, "乙酸乙酯皂化")
+        dilution_quote = "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.050 mol/L。"
+        value_quote = "在 0.050 mol/L、25摄氏度、电导法下测得速率常数为 0.020 L/(mol·s)。"
+        extracted = dispatch(
+            job,
+            "extract_claims",
+            {
+                "claims": [
+                    {"id": "d1", "kind": "calculation", "quote": dilution_quote, "expression": "dilution", "reported": "0.050"},
+                    {
+                        "id": "v1",
+                        "kind": "value",
+                        "quote": value_quote,
+                        "quantity": "速率常数",
+                        "dosage": "0.050 mol/L",
+                        "temperature": "25摄氏度",
+                        "method": "电导法",
+                    },
+                ]
+            },
+        )
+        self.assertTrue(extracted["ok"], extracted)
+        dispatch(job, "judge_claim", {"claim_id": "d1", "verdict": "contradicts", "improvement": "工作浓度应为 0.010 mol/L。"})
+        _open_page(job, "https://example.test/k", "皂化", evidence, "v1", "皂化 速率常数")
+        selected = dispatch(job, "select_evidence", {"claim_id": "v1", "url": "https://example.test/k"})
+        dispatch(
+            job,
+            "judge_claim",
+            {
+                "claim_id": "v1",
+                "verdict": "contradicts",
+                "url": "https://example.test/k",
+                "sentence_id": selected["sentences"][0]["id"],
+                "explanation": "速率常数相对文献偏差过大。",
+            },
+        )
+        review = dispatch(job, "finish_review", {"summary": "计量与速率常数都有问题。"})
+        self.assertEqual({item["claim_id"] for item in review["review"]["confirmed_errors"]}, {"d1", "v1"})
+        self.assertEqual(review["review"]["causal_notes"][0]["kind"], "metering_may_cause_value_error")
+        self.assertIn("d1", review["review"]["causal_notes"][0]["metering_claim_ids"])
+        self.assertIn("v1", review["review"]["causal_notes"][0]["value_claim_ids"])
+        self.assertIn("应得工作浓度", review["review"]["causal_notes"][0]["statement"])
+        self.assertIn("0.01", review["review"]["causal_notes"][0]["statement"])
+
     def test_disagreeing_literature_values_are_not_report_errors(self):
         report = "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 30 kJ/mol。"
         job = Job.closed()
@@ -354,7 +596,7 @@ class HarnessTest(unittest.TestCase):
             "https://example.test/high": "0.10 mol/L、25摄氏度、电导法下活化能为 80 kJ/mol。",
         }
         hits = [{"title": url, "url": url, "excerpt": text} for url, text in pages.items()]
-        with patch("repro.tools.search_web", return_value=hits), patch("repro.tools.fetch_page", side_effect=lambda url: pages[url]):
+        with patch("kinetics_audit.tools.search_web", return_value=hits), patch("kinetics_audit.tools.fetch_page", side_effect=lambda url: pages[url]):
             dispatch(job, "search_references", {"query": "皂化 活化能", "claim_id": "v1"})
             for url in pages:
                 dispatch(job, "read_reference", {"url": url})
@@ -441,7 +683,7 @@ class HarnessTest(unittest.TestCase):
         claim["quantity"] = "速率常数"
         dispatch(job, "extract_claims", {"claims": [claim]})
         with patch(
-            "repro.tools.search_solution",
+            "kinetics_audit.tools.search_solution",
             return_value=[{"title": "OH", "url": "https://kinetics.nist.gov/solution/Detail?id=test", "text": evidence}],
         ):
             found = dispatch(job, "search_solution_kinetics", {"claim_id": "v1", "reactant": "OH", "solvent": "water"})
@@ -472,16 +714,12 @@ class HarnessTest(unittest.TestCase):
         dispatch(job, "extract_claims", {"claims": [claim]})
         _open_page(job, "https://example.test/weak", "速率", weak, "v1", "速率常数")
         selected = dispatch(job, "select_evidence", {"claim_id": "v1", "url": "https://example.test/weak"})
-        first = dispatch(
-            job,
-            "judge_claim",
-            {"claim_id": "v1", "verdict": "contradicts", "url": "https://example.test/weak", "sentence_id": selected["sentences"][0]["id"]},
-        )
-        self.assertEqual(first["judgment"]["status"], "not_comparable")
+        self.assertTrue(selected["abstain"])
+        self.assertEqual(job.judgments[-1]["status"], "not_comparable")
         limited = dispatch(job, "search_references", {"query": "速率常数 0.10 mol/L", "claim_id": "v1"})
         self.assertEqual(limited["error"], "search_limit")
         hit = {"title": "条件一致", "url": "https://example.test/strong", "excerpt": strong}
-        with patch("repro.tools.search_web", return_value=[hit]), patch("repro.tools.fetch_page", return_value=strong):
+        with patch("kinetics_audit.tools.search_web", return_value=[hit]), patch("kinetics_audit.tools.fetch_page", return_value=strong):
             retried = dispatch(job, "retry_claim", {"claim_id": "v1"})
             self.assertTrue(retried["ok"])
             self.assertIn("0.10 mol/L", retried["query"])
@@ -561,6 +799,131 @@ class HarnessTest(unittest.TestCase):
         source = "def run(data_path, out_dir):\n    open('../outside.txt', encoding='utf-8').read()\n"
         result = execute(source, [{"run_id": 1, "value": 1}])
         self.assertNotEqual(result["exit_code"], 0)
+
+    def test_spectrophotometry_is_comparable_only_with_the_same_method(self):
+        report = "乙酸乙酯皂化。在 0.050 mol/L、25摄氏度、分光光度法下测得速率常数为 0.020 L/(mol·s)。"
+        evidence = offline_page("https://example.test/offline/saponification-spectrophotometry")
+        job = Job.closed()
+        _report(job, report, "乙酸乙酯皂化")
+        claim = {
+            "id": "v1",
+            "kind": "value",
+            "quote": "在 0.050 mol/L、25摄氏度、分光光度法下测得速率常数为 0.020 L/(mol·s)。",
+            "quantity": "速率常数",
+            "dosage": "0.050 mol/L",
+            "temperature": "25摄氏度",
+            "method": "分光光度法",
+        }
+        dispatch(job, "extract_claims", {"claims": [claim]})
+        _open_page(job, "https://example.test/offline/saponification-spectrophotometry", "分光", evidence, "v1", "皂化 分光")
+        selected = dispatch(job, "select_evidence", {"claim_id": "v1", "url": "https://example.test/offline/saponification-spectrophotometry"})
+        judged = dispatch(
+            job,
+            "judge_claim",
+            {
+                "claim_id": "v1",
+                "verdict": "supports",
+                "url": "https://example.test/offline/saponification-spectrophotometry",
+                "sentence_id": selected["sentences"][0]["id"],
+            },
+        )
+        self.assertEqual(judged["judgment"]["status"], "contradicts")
+        conductivity = offline_page("https://example.test/offline/saponification-conductivity")
+        other = Job.closed()
+        _report(other, report, "乙酸乙酯皂化")
+        dispatch(other, "extract_claims", {"claims": [claim]})
+        _open_page(other, "https://example.test/offline/saponification-conductivity", "电导", conductivity, "v1", "皂化 电导")
+        picked = dispatch(other, "select_evidence", {"claim_id": "v1", "url": "https://example.test/offline/saponification-conductivity"})
+        self.assertTrue(picked["abstain"])
+        self.assertFalse(picked["sentences"])
+        self.assertEqual(other.judgments[-1]["status"], "not_comparable")
+        self.assertEqual(other.judgments[-1]["reason"], "conditions")
+
+    def test_stopped_flow_offline_page_is_a_distinct_method(self):
+        report = "在 0.010 mol/L、25摄氏度、停流法下测得速率常数为 0.020 L/(mol·s)。"
+        evidence = offline_page("https://example.test/offline/saponification-stopped-flow")
+        job = Job.closed()
+        _report(job, report, "乙酸乙酯皂化")
+        claim = {
+            "id": "v1",
+            "kind": "value",
+            "quote": report,
+            "quantity": "速率常数",
+            "dosage": "0.010 mol/L",
+            "temperature": "25摄氏度",
+            "method": "停流法",
+        }
+        dispatch(job, "extract_claims", {"claims": [claim]})
+        _open_page(job, "https://example.test/offline/saponification-stopped-flow", "停流", evidence, "v1", "皂化 停流")
+        selected = dispatch(job, "select_evidence", {"claim_id": "v1", "url": "https://example.test/offline/saponification-stopped-flow"})
+        judged = dispatch(
+            job,
+            "judge_claim",
+            {
+                "claim_id": "v1",
+                "verdict": "supports",
+                "url": "https://example.test/offline/saponification-stopped-flow",
+                "sentence_id": selected["sentences"][0]["id"],
+            },
+        )
+        self.assertEqual(judged["judgment"]["status"], "contradicts")
+
+    def test_arrhenius_missing_data_returns_a_hint(self):
+        report = "活化能为 10 kJ/mol。"
+        job = Job.closed()
+        _report(job, report)
+        extracted = dispatch(
+            job,
+            "extract_claims",
+            {"claims": [{"id": "c1", "kind": "calculation", "quote": report, "expression": "arrhenius", "reported": "10"}]},
+        )
+        self.assertFalse(extracted["ok"])
+        self.assertEqual(extracted["rejected"][0]["error"], "arrhenius_data_required")
+        self.assertIn("两组温度", extracted["rejected"][0]["hint"])
+
+    def test_propose_candidates_gates_extract_claims(self):
+        report = "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 30 kJ/mol。"
+        job = Job.closed()
+        _report(job, report)
+        proposed = dispatch(job, "propose_candidates", {})
+        self.assertTrue(proposed["ok"])
+        self.assertGreaterEqual(proposed["count"], 1)
+        self.assertIn("value", proposed["candidates"][0]["kinds"])
+        ok = dispatch(
+            job,
+            "extract_claims",
+            {
+                "claims": [
+                    {
+                        **_kinetic(report),
+                        "candidate_id": proposed["candidates"][0]["id"],
+                    }
+                ]
+            },
+        )
+        self.assertTrue(ok["ok"], ok)
+        forged = Job.closed()
+        _report(forged, report)
+        dispatch(forged, "propose_candidates", {})
+        bad = dispatch(
+            forged,
+            "extract_claims",
+            {
+                "claims": [
+                    {
+                        "id": "v1",
+                        "kind": "value",
+                        "quote": "文献里随便写的活化能为 30 kJ/mol。",
+                        "quantity": "活化能",
+                        "dosage": "0.10 mol/L",
+                        "temperature": "25摄氏度",
+                        "method": "电导法",
+                    }
+                ]
+            },
+        )
+        self.assertFalse(bad["ok"])
+        self.assertEqual(bad["rejected"][0]["error"], "quote_not_in_report")
 
 
 if __name__ == "__main__":

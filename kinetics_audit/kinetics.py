@@ -1,7 +1,7 @@
 import math
 import re
 
-from repro.numbers import measurements, tolerance
+from kinetics_audit.numbers import measurements, tolerance
 
 R = 8.314462618
 _INDEPENDENT = ("与用量无关", "与浓度无关", "不随浓度", "不随用量", "与反应物浓度无关")
@@ -104,6 +104,96 @@ def expected_rate(quote, equation, reported):
         "computed_unit": target["unit"],
         "reported": reported,
         "relative_difference": gap,
+    }
+
+
+def dilution_concentration(quote, reported):
+    found = measurements(quote)
+    concentrations = [item for item in found if item["dimension"] == "molar_concentration"]
+    volumes = [item for item in found if item["dimension"] == "volume"]
+    targets = [item for item in concentrations if item["number"] == reported]
+    stocks = [item for item in concentrations if item["number"] != reported]
+    if len(targets) != 1:
+        raise ValueError("dilution_missing_reported_concentration")
+    if len(stocks) != 1:
+        raise ValueError("dilution_missing_stock_concentration")
+    if len(volumes) < 2:
+        raise ValueError("dilution_missing_volumes")
+    if len(volumes) > 2:
+        raise ValueError("dilution_ambiguous_volumes")
+    target = targets[0]
+    stock = stocks[0]
+    aliquot, total = sorted(volumes, key=lambda item: item["base"])
+    if aliquot["base"] <= 0 or total["base"] <= 0 or aliquot["base"] >= total["base"]:
+        raise ValueError("dilution_invalid_volumes")
+    computed_base = stock["base"] * aliquot["base"] / total["base"]
+    allowed = tolerance("molar_concentration", target["approximate"] or stock["approximate"])
+    gap = abs(computed_base - target["base"]) / max(abs(computed_base), 1e-12)
+    factor = target["base"] / float(target["number"]) if float(target["number"]) else 1.0
+    expected = computed_base / factor
+    return {
+        "status": "supports" if gap <= allowed else "contradicts",
+        "computed": expected,
+        "computed_unit": target["unit"],
+        "expected_working_concentration": expected,
+        "expected_unit": target["unit"],
+        "reported": reported,
+        "relative_difference": gap,
+        "tolerance": allowed,
+        "stock": stock["number"],
+        "aliquot": aliquot["number"],
+        "aliquot_unit": aliquot["unit"],
+        "total": total["number"],
+        "total_unit": total["unit"],
+    }
+
+
+_EQUAL_MARKS = (
+    "等浓度",
+    "等初浓度",
+    "浓度相等",
+    "等物质的量浓度",
+    "[a]0=[b]0",
+    "a0=b0",
+    "initialconcentrationsareequal",
+    "equalinitialconcentrations",
+)
+
+
+def equal_initial_check(quote, equation):
+    if not isinstance(equation, str) or _compact(equation) not in _compact(quote):
+        raise ValueError("equation_required")
+    reactants = _reactants(equation)
+    if len(reactants) < 2:
+        raise ValueError("stoichiometry_need_two_reactants")
+    concentrations = [
+        item for item in measurements(quote) if item["dimension"] == "molar_concentration"
+    ]
+    if len(concentrations) < 2:
+        raise ValueError("stoichiometry_missing_concentrations")
+    left, right = concentrations[0], concentrations[1]
+    scale = max(abs(left["base"]), abs(right["base"]), 1e-12)
+    gap = abs(left["base"] - right["base"]) / scale
+    allowed = tolerance("molar_concentration", left["approximate"] or right["approximate"])
+    claimed_equal = any(mark in _compact(quote) for mark in _EQUAL_MARKS)
+    if gap <= allowed:
+        status = "supports"
+    elif claimed_equal:
+        status = "contradicts"
+    else:
+        status = "not_enough"
+    return {
+        "status": status,
+        "computed": gap,
+        "computed_unit": "relative",
+        "reported": left["number"],
+        "relative_difference": gap,
+        "tolerance": allowed,
+        "left": left["number"],
+        "left_unit": left["unit"],
+        "right": right["number"],
+        "right_unit": right["unit"],
+        "claimed_equal": claimed_equal,
     }
 
 

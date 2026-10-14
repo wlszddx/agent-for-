@@ -1,0 +1,513 @@
+{
+  "description": "Claim-level gold labels for offline accuracy eval. Predicted status comes from finish_review. Full paste-ready reports live under gold/reports/.",
+  "cases": [
+    {
+      "id": "method-celsius-contradicts",
+      "experiment": "皂化反应",
+      "report": "本实验直接用摄氏温度拟合速率常数。",
+      "kind": "method",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "m1",
+        "kind": "method",
+        "quote": "本实验直接用摄氏温度拟合速率常数。",
+        "slot": "摄氏温度"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/arrhenius",
+        "title": "阿伦尼乌斯公式",
+        "text": "拟合必须使用热力学温度，不能把摄氏温度直接代入。",
+        "query": "Arrhenius 温度"
+      },
+      "select": {"focus": "热力学温度 拟合"},
+      "judge": {
+        "verdict": "contradicts",
+        "literature_span": "热力学温度",
+        "pick_contains": "热力学温度"
+      },
+      "gold_quotes": ["本实验直接用摄氏温度拟合速率常数。"]
+    },
+    {
+      "id": "method-model-downgrade-not-enough",
+      "experiment": "皂化反应",
+      "report": "本实验直接用摄氏温度拟合速率常数。",
+      "kind": "method",
+      "gold_status": "not_enough",
+      "claim": {
+        "id": "m1",
+        "kind": "method",
+        "quote": "本实验直接用摄氏温度拟合速率常数。",
+        "slot": "摄氏温度"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/arrhenius-soft",
+        "title": "阿伦尼乌斯公式",
+        "text": "拟合必须使用热力学温度，不能把摄氏温度直接代入。",
+        "query": "Arrhenius 温度"
+      },
+      "select": {"focus": "热力学温度 拟合"},
+      "judge": {
+        "verdict": "not_enough",
+        "literature_span": "热力学温度",
+        "pick_contains": "热力学温度"
+      }
+    },
+    {
+      "id": "method-unrelated-slot-not-enough",
+      "experiment": "皂化反应",
+      "report": "做法：在 5、10、15、20 min 用电导法测定电导并回归速率常数。",
+      "kind": "method",
+      "gold_status": "not_enough",
+      "claim": {
+        "id": "m1",
+        "kind": "method",
+        "quote": "做法：在 5、10、15、20 min 用电导法测定电导并回归速率常数。",
+        "slot": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/visuv",
+        "title": "自由基",
+        "text": "Analytical technique: Vis-UV absorption。",
+        "query": "ethyl acetate"
+      },
+      "judge": {
+        "verdict": "contradicts",
+        "literature_span": "Vis-UV",
+        "pick_contains": "Vis-UV"
+      }
+    },
+    {
+      "id": "value-activation-supports",
+      "experiment": "乙酸乙酯皂化",
+      "report": "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 48.5 kJ/mol。",
+      "kind": "value",
+      "gold_status": "supports",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 48.5 kJ/mol。",
+        "quantity": "活化能",
+        "dosage": "0.10 mol/L",
+        "temperature": "25摄氏度",
+        "method": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/ea",
+        "title": "乙酸乙酯皂化",
+        "text": "在 0.10 mol/L、25摄氏度、电导法下皂化反应活化能约为 48.5 kJ/mol。",
+        "query": "皂化 活化能"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "value-activation-independence-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report": "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 30 kJ/mol。",
+      "kind": "value",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 30 kJ/mol。",
+        "quantity": "活化能",
+        "dosage": "0.10 mol/L",
+        "temperature": "25摄氏度",
+        "method": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/ea-free",
+        "title": "活化能",
+        "text": "该反应活化能与用量无关，约为 48.5 kJ/mol。",
+        "query": "活化能 用量"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "value-rate-setup-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report": "在 0.50 mol/L、25摄氏度、电导法下测得速率常数为 0.020 s^-1。",
+      "kind": "value",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.50 mol/L、25摄氏度、电导法下测得速率常数为 0.020 s^-1。",
+        "quantity": "速率常数",
+        "dosage": "0.50 mol/L",
+        "temperature": "25摄氏度",
+        "method": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/dense",
+        "title": "电导",
+        "text": "在 0.50 mol/L、25摄氏度、电导法下速率常数为 0.020 s^-1。",
+        "query": "电导"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "value-rate-number-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report": "在 0.0101 mol/L、25℃、电导法下测得速率常数为 5.193 L/(mol·min)。",
+      "kind": "value",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.0101 mol/L、25℃、电导法下测得速率常数为 5.193 L/(mol·min)。",
+        "quantity": "速率常数",
+        "dosage": "0.0101 mol/L",
+        "temperature": "25℃",
+        "method": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/cond",
+        "title": "电导",
+        "text": "At 25 °C and 0.01 mol/L, the conductivity method gives k = 6.43 L/(mol·min).",
+        "query": "saponification"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "value-rate-from-full-report-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report_file": "reports/01-metering-and-rate.txt",
+      "kind": "value",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.050 mol/L、25摄氏度、电导法下测得速率常数为 0.020 L/(mol·s)。",
+        "quantity": "速率常数",
+        "dosage": "0.050 mol/L",
+        "temperature": "25摄氏度",
+        "method": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/k-full",
+        "title": "皂化",
+        "text": "在 0.050 mol/L、25摄氏度、电导法下皂化反应速率常数为 0.100 L/(mol·s)。",
+        "query": "皂化 速率常数"
+      },
+      "judge": {"verdict": "contradicts"},
+      "gold_quotes": [
+        "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.050 mol/L。",
+        "在 0.050 mol/L、25摄氏度、电导法下测得速率常数为 0.020 L/(mol·s)。"
+      ]
+    },
+    {
+      "id": "value-temperature-not-comparable",
+      "experiment": "乙酸乙酯皂化",
+      "report": "在 0.0101 mol/L、25℃、电导法下测得速率常数为 5.193 L/(mol·min)。",
+      "kind": "value",
+      "gold_status": "not_comparable",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.0101 mol/L、25℃、电导法下测得速率常数为 5.193 L/(mol·min)。",
+        "quantity": "速率常数",
+        "dosage": "0.0101 mol/L",
+        "temperature": "25℃",
+        "method": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/hot",
+        "title": "电导",
+        "text": "At 35 °C and 0.01 mol/L, the conductivity method gives k = 6.43 L/(mol·min).",
+        "query": "saponification"
+      },
+      "expect_abstain": true
+    },
+    {
+      "id": "value-radical-not-comparable",
+      "experiment": "乙酸乙酯皂化",
+      "report_file": "reports/02-radical-trap.txt",
+      "kind": "value",
+      "gold_status": "not_comparable",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.050 mol/L、25摄氏度、电导法下测得速率常数为 0.020 L/(mol·s)。",
+        "quantity": "速率常数",
+        "dosage": "0.050 mol/L",
+        "temperature": "25摄氏度",
+        "method": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/radical",
+        "title": "自由基",
+        "text": "At 25 °C the conductivity method for ·OH + ethyl acetate gives k = 4.0E8 L/(mol·s).",
+        "query": "ethyl acetate"
+      },
+      "expect_abstain": true
+    },
+    {
+      "id": "value-spectro-vs-conductivity-not-comparable",
+      "experiment": "乙酸乙酯皂化",
+      "report_file": "reports/05-method-mismatch.txt",
+      "kind": "value",
+      "gold_status": "not_comparable",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.050 mol/L、25摄氏度、分光光度法下测得速率常数为 0.020 L/(mol·s)。",
+        "quantity": "速率常数",
+        "dosage": "0.050 mol/L",
+        "temperature": "25摄氏度",
+        "method": "分光光度法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/conductivity-vs-spectro",
+        "title": "电导",
+        "text": "在 0.050 mol/L、25摄氏度、电导法下皂化反应速率常数为 0.100 L/(mol·s)。测定方法与分光光度法不同，不能把电导法文献值直接当作分光法结果。",
+        "query": "皂化 电导"
+      },
+      "expect_abstain": true
+    },
+    {
+      "id": "value-spectro-same-method-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report": "乙酸乙酯皂化。在 0.050 mol/L、25摄氏度、分光光度法下测得速率常数为 0.020 L/(mol·s)。",
+      "kind": "value",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.050 mol/L、25摄氏度、分光光度法下测得速率常数为 0.020 L/(mol·s)。",
+        "quantity": "速率常数",
+        "dosage": "0.050 mol/L",
+        "temperature": "25摄氏度",
+        "method": "分光光度法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/spectro",
+        "title": "分光",
+        "text": "在 0.050 mol/L、25摄氏度、分光光度法下皂化反应速率常数为 0.095 L/(mol·s)。",
+        "query": "皂化 分光"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "value-stopped-flow-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report": "在 0.010 mol/L、25摄氏度、停流法下测得速率常数为 0.020 L/(mol·s)。",
+      "kind": "value",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.010 mol/L、25摄氏度、停流法下测得速率常数为 0.020 L/(mol·s)。",
+        "quantity": "速率常数",
+        "dosage": "0.010 mol/L",
+        "temperature": "25摄氏度",
+        "method": "停流法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/stopped-flow",
+        "title": "停流",
+        "text": "在 0.010 mol/L、25摄氏度、停流法下皂化反应速率常数为 0.12 L/(mol·s)。",
+        "query": "皂化 停流"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "value-bare-conditions-not-comparable",
+      "experiment": "乙酸乙酯皂化",
+      "report": "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 48.5 kJ/mol。",
+      "kind": "value",
+      "gold_status": "not_comparable",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 48.5 kJ/mol。",
+        "quantity": "活化能",
+        "dosage": "0.10 mol/L",
+        "temperature": "25摄氏度",
+        "method": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/bare-ea",
+        "title": "乙酸乙酯皂化",
+        "text": "皂化反应活化能约为 48.5 kJ/mol。",
+        "query": "活化能"
+      },
+      "expect_abstain": true
+    },
+    {
+      "id": "calc-dilution-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report": "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.050 mol/L。",
+      "kind": "calculation",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "c1",
+        "kind": "calculation",
+        "quote": "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.050 mol/L。",
+        "expression": "dilution",
+        "reported": "0.050"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "calc-dilution-supports",
+      "experiment": "乙酸乙酯皂化",
+      "report": "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.010 mol/L。",
+      "kind": "calculation",
+      "gold_status": "supports",
+      "claim": {
+        "id": "c1",
+        "kind": "calculation",
+        "quote": "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.010 mol/L。",
+        "expression": "dilution",
+        "reported": "0.010"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "calc-dilution-from-full-report-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report_file": "reports/01-metering-and-rate.txt",
+      "kind": "calculation",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "d1",
+        "kind": "calculation",
+        "quote": "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.050 mol/L。",
+        "expression": "dilution",
+        "reported": "0.050"
+      },
+      "judge": {"verdict": "contradicts"}
+    },
+    {
+      "id": "calc-arrhenius-contradicts",
+      "experiment": "皂化反应",
+      "report": "25摄氏度时速率常数为 0.001 s^-1，35摄氏度时速率常数为 0.002 s^-1，活化能为 10 kJ/mol。",
+      "kind": "calculation",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "c1",
+        "kind": "calculation",
+        "quote": "25摄氏度时速率常数为 0.001 s^-1，35摄氏度时速率常数为 0.002 s^-1，活化能为 10 kJ/mol。",
+        "expression": "arrhenius",
+        "reported": "10"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "calc-rate-supports",
+      "experiment": "乙酸乙酯皂化",
+      "report": "反应式 CH3COOC2H5 + NaOH → CH3COONa + C2H5OH。0.0100 mol/L 下速率常数为 6.00 L/(mol·min)，速率为 0.000600 mol/(L·min)。",
+      "kind": "calculation",
+      "gold_status": "supports",
+      "claim": {
+        "id": "c1",
+        "kind": "calculation",
+        "quote": "反应式 CH3COOC2H5 + NaOH → CH3COONa + C2H5OH。0.0100 mol/L 下速率常数为 6.00 L/(mol·min)，速率为 0.000600 mol/(L·min)。",
+        "expression": "rate",
+        "equation": "CH3COOC2H5 + NaOH → CH3COONa + C2H5OH",
+        "reported": "0.000600"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "calc-rate-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report": "反应式 CH3COOC2H5 + NaOH → CH3COONa + C2H5OH。0.0100 mol/L 下速率常数为 6.00 L/(mol·min)，速率为 0.006000 mol/(L·min)。",
+      "kind": "calculation",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "c1",
+        "kind": "calculation",
+        "quote": "反应式 CH3COOC2H5 + NaOH → CH3COONa + C2H5OH。0.0100 mol/L 下速率常数为 6.00 L/(mol·min)，速率为 0.006000 mol/(L·min)。",
+        "expression": "rate",
+        "equation": "CH3COOC2H5 + NaOH → CH3COONa + C2H5OH",
+        "reported": "0.006000"
+      },
+      "judge": {"verdict": "supports"}
+    },
+    {
+      "id": "calc-stoichiometry-contradicts",
+      "experiment": "乙酸乙酯皂化",
+      "report": "反应式 CH3COOC2H5 + NaOH → CH3COONa + C2H5OH。等浓度下乙酸乙酯 0.020 mol/L，氢氧化钠 0.010 mol/L。",
+      "kind": "calculation",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "s1",
+        "kind": "calculation",
+        "quote": "反应式 CH3COOC2H5 + NaOH → CH3COONa + C2H5OH。等浓度下乙酸乙酯 0.020 mol/L，氢氧化钠 0.010 mol/L。",
+        "expression": "stoichiometry",
+        "equation": "CH3COOC2H5 + NaOH → CH3COONa + C2H5OH",
+        "reported": "0.020"
+      },
+      "judge": {"verdict": "contradicts"}
+    },
+    {
+      "id": "calc-stoichiometry-silent-not-enough",
+      "experiment": "乙酸乙酯皂化",
+      "report": "反应式 CH3COOC2H5 + NaOH → CH3COONa + C2H5OH。乙酸乙酯 0.020 mol/L，氢氧化钠 0.010 mol/L。",
+      "kind": "calculation",
+      "gold_status": "not_enough",
+      "claim": {
+        "id": "s1",
+        "kind": "calculation",
+        "quote": "反应式 CH3COOC2H5 + NaOH → CH3COONa + C2H5OH。乙酸乙酯 0.020 mol/L，氢氧化钠 0.010 mol/L。",
+        "expression": "stoichiometry",
+        "equation": "CH3COOC2H5 + NaOH → CH3COONa + C2H5OH",
+        "reported": "0.020"
+      },
+      "judge": {"verdict": "contradicts"}
+    },
+    {
+      "id": "method-from-full-report-contradicts",
+      "experiment": "皂化反应",
+      "report_file": "reports/03-method-celsius.txt",
+      "kind": "method",
+      "gold_status": "contradicts",
+      "claim": {
+        "id": "m1",
+        "kind": "method",
+        "quote": "本实验直接用摄氏温度拟合速率常数。",
+        "slot": "摄氏温度"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/arrhenius-full",
+        "title": "阿伦尼乌斯温度用法",
+        "text": "拟合必须使用热力学温度，不能把摄氏温度直接代入。记录原始数据时可以记下摄氏温度，但代入公式前要换成开尔文。",
+        "query": "Arrhenius 温度"
+      },
+      "select": {"focus": "热力学温度 拟合"},
+      "judge": {
+        "verdict": "contradicts",
+        "literature_span": "热力学温度",
+        "pick_contains": "热力学温度"
+      }
+    },
+    {
+      "id": "value-clean-report-activation-supports",
+      "experiment": "乙酸乙酯皂化",
+      "report_file": "reports/04-clean-supports.txt",
+      "kind": "value",
+      "gold_status": "supports",
+      "claim": {
+        "id": "v1",
+        "kind": "value",
+        "quote": "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 48.5 kJ/mol。",
+        "quantity": "活化能",
+        "dosage": "0.10 mol/L",
+        "temperature": "25摄氏度",
+        "method": "电导法"
+      },
+      "evidence": {
+        "url": "https://example.test/eval/ea-clean",
+        "title": "乙酸乙酯皂化",
+        "text": "在 0.10 mol/L、25摄氏度、电导法下皂化反应活化能约为 48.5 kJ/mol。",
+        "query": "皂化 活化能"
+      },
+      "judge": {"verdict": "supports"},
+      "gold_quotes": [
+        "取 10.0 mL 的 0.100 mol/L 母液，定容至 100 mL，得到工作浓度 0.010 mol/L。",
+        "在 0.10 mol/L、25摄氏度、电导法下测得活化能为 48.5 kJ/mol。"
+      ]
+    }
+  ]
+}

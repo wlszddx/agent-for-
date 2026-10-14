@@ -1,12 +1,12 @@
 import argparse
 import sys
 
-from repro.mcp import serve
-from repro.tools import Job
+from kinetics_audit.mcp import serve
+from kinetics_audit.tools import Job
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="repro")
+    parser = argparse.ArgumentParser(prog="kinetics-audit")
     commands = parser.add_subparsers(dest="command", required=True)
     mcp = commands.add_parser("mcp")
     mcp.add_argument("--experiment")

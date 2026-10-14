@@ -5,9 +5,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from repro.reactions import keep_solution_record
-from repro.search import USER_AGENT, _public_https
-from repro.vectors import embed
+from kinetics_audit.search import USER_AGENT, _public_https
+from kinetics_audit.vectors import embed
 
 _SOLUTION_SEARCH = "https://kinetics.nist.gov/solution/SearchForm"
 _SOLUTION_ROOT = "https://kinetics.nist.gov/solution/"
@@ -34,7 +33,7 @@ _COLUMN_NAMES = {
 }
 
 
-def search_solution(reactant, solvent="", family=""):
+def search_solution(reactant, solvent=""):
     reactant = _term(reactant)
     solvent = _term(solvent, required=False)
     if reactant is None or solvent is None:
@@ -54,7 +53,7 @@ def search_solution(reactant, solvent="", family=""):
         if _down(detail):
             continue
         text = solution_record(detail)
-        if not text or not keep_solution_record(text, family):
+        if not text:
             continue
         found.append({"title": reactant, "url": url, "text": text})
         if len(found) == 4:
@@ -255,7 +254,7 @@ def _solvent(page):
     match = re.search(r"Solvent details.*?<B>\s*Name\s*</B>(.*?)<BR>", page or "", re.I | re.S)
     if not match:
         return ""
-    return _plain(match.group(1)).lstrip(":").strip()
+    return _plain(match.group(1))
 
 
 def _table_rows(page):

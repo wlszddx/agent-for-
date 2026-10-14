@@ -1,4 +1,4 @@
-# 实验复现项目文档
+# 溶液动力学报告审核项目文档
 
 本科生组，队伍智能鳄梨，参赛编号 U348。
 
@@ -6,7 +6,7 @@
 
 ## 目的
 
-作品用 Agnes 和 AGH 判断溶液反应动力学实验报告，只核对速率常数、活化能和温度做法。模型先从报告抽出主张，再按主张联网检索并打开页面。程序把页面按句切开，用字符二元组的哈希向量在内存中选出相关原句，并检查句子是否盖住用量、温度和测定方法。溶液反应的速率常数来自与该反应相同的文献。皂化反应不采用 NIST 里的自由基辐解记录。网页检索会去掉百科、词典和测速站。比较数字之前先确认是不是同一个反应。句向量留在本机，不接入远程决策模型。速率常数和活化能不随初始用量改变，同一反应在用量不同时仍按温度和测定方法比较数值。电导法只适用于稀溶液，用量高于 0.20 mol/L 时这一步的条件不合理。温度差出容差或测定方法不是同一类，仍然不可比。活化能在文献写明与用量无关时也可以比较。温度做法由程序比较报告原句和文献原句。文献句必须讨论报告里的同一步做法，两句原文不同才记为错误。用量改变不影响这一判断。不可比或证据不足时，程序用这三项条件再检索一次公开网页，已有判断保留。报告自带温度和速率常数时，程序按 Arrhenius 公式重算活化能。报告给出反应式、速率常数和浓度时，程序按计量数计算应有速率；反应式本身推不出速率常数。`finish_review` 分成已证实的错误、文献支持、证据不足。没有内置测量数据。
+作品用 Agnes 和 AGH **审溶液反应动力学报告对错与条件**，不替代动力学曲线拟合软件，也不做全科批改。核对速率常数、活化能、温度做法，以及配制稀释与等浓度计量；电导法、分光光度法、停流法共用同一套规则。程序先 `propose_candidates` 枚举候选原句，模型只在候选内点选主张；选证据时先按同一反应、测定方法与温度硬过滤，再向量排序。联网失败可回退 `reference_cache/`（默认空）。模型写 explanation、improvement 与 summary。稀释核对写出应得工作浓度；缺字段时返回可执行 hint。程序做句向量检索与条件核对。比较数字前先核对反应物与测定方法；对不上则不可比，不误判。数值对错由程序决定；方法主张上模型可将程序判错降为证据不足，但不能单独判错。计量与动力学数值同时出错时给出 `causal_notes`，提示优先排查配制。速率常数和活化能不随初始用量改变。电导法用量高于 0.20 mol/L 时条件不合理。温度差出容差或测定方法不同类仍不可比。Arrhenius 与按反应式算速率用报告自有数据重算。`finish_review` 分已证实错误、文献支持、证据不足。没有内置原始测量表拟合。
 
 一次有效运行要在同一个 AGH 会话里连续完成这些步骤：
 
@@ -23,22 +23,23 @@ AGH 是运行宿主，本仓库是它调用的 MCP 能力。不要把 AGH 源码
 开发分三层：
 
 1. 报告读取。`read_report` 和 `record_report` 接收用户给出的文件或照片正文。
-2. 判断。`repro/vectors.py` 做当次页面的句向量检索，`repro/kinetics.py` 核对用量条件和 Arrhenius 拟合，`repro/numbers.py` 解析数字、单位和算式，`judge_claim` 给出程序结论。
-3. AGH 接入。`serve_mcp.py` 从项目根目录启动 MCP。AGH 的 stdio 配置没有工作目录，所以入口脚本自己切到项目根目录。
+2. 判断。`kinetics_audit/vectors.py` 做当次页面的句向量检索，`kinetics_audit/kinetics.py` 核对用量条件和 Arrhenius 拟合，`kinetics_audit/numbers.py` 解析数字、单位和算式，`judge_claim` 给出程序结论。
+3. AGH 接入。`mcp_server.py` 从项目根目录启动 MCP。AGH 的 stdio 配置没有工作目录，所以入口脚本自己切到项目根目录。
 
 本地检查在项目根目录执行：
 
 ```text
-py -3 -m unittest tests.test_harness
+py -3 -m unittest tests.test_harness tests.test_eval_metrics
+py -3 -m eval.run
 ```
 
-单元测试使用固定的报告正文和检索结果，不调用在线模型。
+单元测试使用固定的报告正文和检索结果，不调用在线模型。`eval/run` 用 `eval/gold/cases.json` 做主张级金标对照，报告 Claim Accuracy、False Conviction Rate（误定罪）、Missed Error Rate（漏检错）与 Macro-F1；不替代 AGH 在线评测，但用于量化程序判决准确度。现场演示按 `docs/DEMO.md`，粘贴材料在 `eval/gold/reports/`。
 
 接入 AGH 的顺序：
 
 1. 用源码构建 AGH，并在仓库根目录执行 `node .\packages\cli\dist\local\agnes.mjs serve`。本地页面是 `http://127.0.0.1:4177/`。
 2. 在模型账号中选择 Agnes AI，地址使用 `https://api.agnes-ai.cn/v1`。Key 只粘贴在 AGH 的密码框里。测试连接后选择 `agnes-3.0-flash`；若不可用，再改用 `agnes-2.5-flash`，并在提交材料里如实写明模型名称、版本和使用阶段。
-3. 注册并启用 stdio MCP。可执行文件是本机 Python，参数是 `serve_mcp.py`。启用后用 `mcp status` 和 `mcp tools` 确认能看到 `read_report`、`record_report`、`extract_claims`、`search_references`、`read_reference`、`select_evidence`、`judge_claim`、`finish_review`。
+3. 注册并启用 stdio MCP。可执行文件是本机 Python，参数是 `mcp_server.py`（见 `agh.mcp.json` 中的 `kinetics_audit`）。启用后用 `mcp status` 和 `mcp tools` 确认能看到 `read_report`、`record_report`、`propose_candidates`、`extract_claims`、`search_references`、`read_reference`、`select_evidence`、`judge_claim`、`finish_review`。
 4. 在一个 AGH 会话中给出实验报告。会话记录要留下抽主张、检索、判断和被拒绝的引用。`finish_review` 把汇总写入 `evidence/`。该目录已忽略，不进入公开仓库。
 
 模型在提交运行中只使用报名提供的 Agnes 模型。用其他编程助手编写本仓库代码，和作品运行时调用的模型是两件事。若运行阶段改用其他模型，必须由队伍自行承担费用，并在材料中写明名称、版本、使用阶段和调用方式。

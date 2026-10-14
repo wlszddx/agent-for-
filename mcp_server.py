@@ -6,6 +6,6 @@ os.chdir(ROOT)
 sys.path.insert(0, ROOT)
 sys.argv = [sys.argv[0], "mcp", *sys.argv[1:]]
 
-from repro.__main__ import main
+from kinetics_audit.__main__ import main
 
 raise SystemExit(main())

@@ -5,7 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from repro.table import read_rows, write_rows
+from kinetics_audit.table import read_rows, write_rows
 
 DRIVER = r"""
 import builtins
@@ -34,7 +34,7 @@ run(str(ROOT / "data.csv"), str(ROOT / "out"))
 
 
 def execute(source, rows):
-    root = Path(tempfile.mkdtemp(prefix="repro-"))
+    root = Path(tempfile.mkdtemp(prefix="kinetics-audit-"))
     (root / "analysis.py").write_text(source, encoding="utf-8")
     (root / "driver.py").write_text(DRIVER, encoding="utf-8")
     (root / "out").mkdir()

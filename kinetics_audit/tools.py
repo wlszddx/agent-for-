@@ -3,10 +3,21 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-from repro.databases import remember, search_enzyme, search_solution
-from repro.kinetics import accepted_dimensions, arrhenius_ea, comparable, dosage_differs, expected_rate, quantity_kind, setup_issue
-from repro.reactions import is_radical, is_saponification, same_reaction
-from repro.numbers import (
+from kinetics_audit.candidates import match_candidate, propose_from_report
+from kinetics_audit.databases import remember, search_enzyme, search_solution
+from kinetics_audit.kinetics import (
+    accepted_dimensions,
+    arrhenius_ea,
+    comparable,
+    dilution_concentration,
+    dosage_differs,
+    equal_initial_check,
+    expected_rate,
+    quantity_kind,
+    setup_issue,
+)
+from kinetics_audit.reactions import same_reaction
+from kinetics_audit.numbers import (
     calculation_status,
     compare_quantity,
     evaluate_expression,
@@ -14,9 +25,9 @@ from repro.numbers import (
     near_quantity,
     number_tokens,
 )
-from repro.report_file import extract_report, locate_report
-from repro.search import fetch_page, search_web
-from repro.vectors import chunk_sentences, rank
+from kinetics_audit.report_file import extract_report, locate_report
+from kinetics_audit.search import fetch_page, search_web
+from kinetics_audit.vectors import chunk_sentences, rank
 
 
 class Job:
@@ -38,6 +49,7 @@ class Job:
         self.selected = {}
         self.review = None
         self.retries = set()
+        self.candidates = []
 
     @classmethod
     def closed(cls):
@@ -55,6 +67,7 @@ def _bind_report(job, experiment, text):
     job.selected = {}
     job.review = None
     job.retries = set()
+    job.candidates = []
     return {"ok": True, "experiment": name, "chars": len(job.report_text)}
 
 
@@ -95,9 +108,18 @@ def record_report(job, args):
     return _bind_report(job, experiment, text)
 
 
+def propose_candidates(job, _args):
+    if not job.report_text:
+        return {"ok": False, "error": "report_required"}
+    job.candidates = propose_from_report(job.report_text, job.experiment_name)
+    return {"ok": True, "count": len(job.candidates), "candidates": job.candidates}
+
+
 def extract_claims(job, args):
     if not job.report_text:
         return {"ok": False, "error": "report_required"}
+    if not job.candidates:
+        job.candidates = propose_from_report(job.report_text, job.experiment_name)
     claims = args.get("claims")
     if not isinstance(claims, list) or not claims:
         return {"ok": False, "error": "claims_required"}
@@ -199,14 +221,11 @@ def _retry_query(claim, experiment=""):
 
 
 def search_solution_kinetics(job, args):
-    claim = _find_claim(job, args.get("claim_id"))
-    blob = " ".join(part for part in (job.experiment_name, claim["quote"] if claim else "", args.get("reactant") or "") if part)
-    family = "saponification" if is_saponification(blob) and not is_radical(blob) else ""
     return _search_database(
         job,
         args,
         "NDRL/NIST solution kinetics",
-        lambda: search_solution(args.get("reactant"), args.get("solvent") or "", family),
+        lambda: search_solution(args.get("reactant"), args.get("solvent") or ""),
     )
 
 
@@ -283,11 +302,63 @@ def select_evidence(job, args):
     if page is None or not page.get("sentences"):
         return {"ok": False, "error": "page_required", "url": url}
     required = _required_phrases(claim)
-    query = " ".join(part for part in (claim["quote"], *required) if part)
-    chosen = rank(query, page["sentences"], required=required)
+    focus = _model_text(args.get("focus"), 120)
+    query = " ".join(part for part in (focus, claim["quote"], *required) if part)
+    eligible = []
+    filtered_out = []
+    for sentence in page["sentences"]:
+        ok, reason = _evidence_eligible(claim, sentence["text"], job.experiment_name)
+        if ok:
+            eligible.append(sentence)
+        else:
+            filtered_out.append({"id": sentence["id"], "reason": reason})
+    chosen = rank(query, eligible, required=required) if eligible else []
+    for item in chosen:
+        item["same_reaction"] = True
+        item["eligible"] = True
     job.selected.setdefault(claim_id, {})[url] = {item["id"]: item["text"] for item in chosen}
-    abstain = bool(chosen) and not any(item["covered"] for item in chosen) and chosen[0]["score"] < 0.05
-    return {"ok": True, "claim_id": claim_id, "url": url, "abstain": abstain, "sentences": chosen}
+    abstain = not chosen or (not any(item["covered"] for item in chosen) and chosen[0]["score"] < 0.05)
+    result = {
+        "ok": True,
+        "claim_id": claim_id,
+        "url": url,
+        "abstain": abstain,
+        "sentences": chosen,
+        "filtered_out": len(filtered_out),
+        "filter": "reaction_method_temperature",
+    }
+    if focus:
+        result["focus"] = focus
+    if abstain and not chosen:
+        reasons = sorted({item["reason"] for item in filtered_out})
+        reason = reasons[0] if len(reasons) == 1 else "conditions"
+        note = "没有通过同一反应、测定方法与温度硬过滤的句子，不能据此判断。"
+        result["note"] = note
+        page = job.references[url]
+        _store_judgment(
+            job,
+            {
+                "claim_id": claim_id,
+                "kind": claim["kind"],
+                "status": "not_comparable",
+                "reason": reason,
+                "statement": note + (f"文献页「{page.get('title') or url}」。" if url else ""),
+                "url": url,
+                "title": page.get("title"),
+                "quantity": claim.get("quantity"),
+            },
+        )
+    return result
+
+
+def _evidence_eligible(claim, sentence, experiment=""):
+    if same_reaction(claim["quote"], sentence, experiment) is False:
+        return False, "reaction"
+    if claim["kind"] == "value":
+        allowed, reason, _missing = comparable(claim["quantity_kind"], claim, sentence)
+        if not allowed:
+            return False, reason
+    return True, "ok"
 
 
 def judge_claim(job, args):
@@ -305,11 +376,12 @@ def judge_claim(job, args):
         if judgment.get("ok") is False:
             job.rejections.append({"tool": "judge_claim", "item": judgment})
             return judgment
+    _attach_model_notes(judgment, args)
     _store_judgment(job, judgment)
     return {"ok": True, "judgment": judgment}
 
 
-def finish_review(job, _args):
+def finish_review(job, args):
     if not job.report_text:
         return {"ok": False, "error": "report_required"}
     if not job.claims:
@@ -330,6 +402,12 @@ def finish_review(job, _args):
         "insufficient": insufficient,
         "rejected": job.rejections,
     }
+    summary = _model_text(args.get("summary"), 800)
+    if summary:
+        review["summary"] = summary
+    notes = _causal_notes(confirmed, job.claims)
+    if notes:
+        review["causal_notes"] = notes
     job.review = review
     dest = Path(__file__).resolve().parents[1] / "evidence"
     dest.mkdir(parents=True, exist_ok=True)
@@ -354,7 +432,10 @@ def _parse_claim(job, item, seen):
     quote = quote.strip()
     if len(_compact(quote)) < 6 or _compact(quote) not in _compact(job.report_text):
         return None, {"error": "quote_not_in_report", "id": claim_id}
-    claim = {"id": claim_id.strip(), "kind": kind, "quote": quote}
+    candidate = match_candidate(job.candidates, item.get("candidate_id"), quote)
+    if candidate is None:
+        return _claim_error("candidate_required", claim_id)
+    claim = {"id": claim_id.strip(), "kind": kind, "quote": quote, "candidate_id": candidate["id"]}
     if kind == "method":
         slot = item.get("slot")
         if not isinstance(slot, str) or len(_compact(slot)) < 2 or _compact(slot) not in _compact(quote):
@@ -366,12 +447,12 @@ def _parse_claim(job, item, seen):
         temperature = item.get("temperature")
         method = item.get("method")
         if not isinstance(quantity, str) or quantity_kind(quantity) is None or _compact(quantity) not in _compact(quote):
-            return None, {"error": "quantity_not_in_class", "id": claim_id}
+            return _claim_error("quantity_not_in_class", claim_id)
         fields = {"dosage": dosage, "temperature": temperature, "method": method}
         if not all(isinstance(value, str) and len(_compact(value)) >= 2 and _compact(value) in _compact(quote) for value in fields.values()):
-            return None, {"error": "kinetic_conditions_required", "id": claim_id}
+            return _claim_error("kinetic_conditions_required", claim_id)
         if not near_quantity(quote, quantity.strip(), measurements(quote)):
-            return None, {"error": "quantity_number_required", "id": claim_id}
+            return _claim_error("quantity_number_required", claim_id)
         claim["quantity"] = quantity.strip()
         claim["quantity_kind"] = quantity_kind(quantity)
         claim.update({key: value.strip() for key, value in fields.items()})
@@ -380,12 +461,12 @@ def _parse_claim(job, item, seen):
         expression = item.get("expression")
         reported = item.get("reported")
         if not isinstance(reported, str) or reported not in number_tokens(quote):
-            return None, {"error": "reported_required", "id": claim_id}
+            return _claim_error("reported_required", claim_id)
         if isinstance(expression, str) and expression.strip().casefold() == "arrhenius":
             try:
                 fitted = arrhenius_ea(quote, reported)
             except ValueError as exc:
-                return None, {"error": str(exc), "id": claim_id}
+                return _claim_error(str(exc), claim_id)
             claim["expression"] = "arrhenius"
             claim["reported"] = reported
             claim["computed"] = fitted["computed"]
@@ -397,7 +478,7 @@ def _parse_claim(job, item, seen):
             try:
                 fitted = expected_rate(quote, equation, reported)
             except ValueError as exc:
-                return None, {"error": str(exc), "id": claim_id}
+                return _claim_error(str(exc), claim_id)
             claim["expression"] = "rate"
             claim["equation"] = equation.strip()
             claim["reported"] = reported
@@ -405,6 +486,50 @@ def _parse_claim(job, item, seen):
             claim["computed_unit"] = fitted["computed_unit"]
             claim["relative_difference"] = fitted["relative_difference"]
             claim["fit_status"] = fitted["status"]
+        elif isinstance(expression, str) and expression.strip().casefold() == "dilution":
+            try:
+                fitted = dilution_concentration(quote, reported)
+            except ValueError as exc:
+                return _claim_error(str(exc), claim_id)
+            claim["expression"] = "dilution"
+            claim["reported"] = reported
+            claim["computed"] = fitted["computed"]
+            claim["computed_unit"] = fitted["computed_unit"]
+            claim["relative_difference"] = fitted["relative_difference"]
+            claim["fit_status"] = fitted["status"]
+            claim["expected_working_concentration"] = fitted["expected_working_concentration"]
+            claim["metering"] = {
+                "stock": fitted["stock"],
+                "aliquot": fitted["aliquot"],
+                "aliquot_unit": fitted["aliquot_unit"],
+                "total": fitted["total"],
+                "total_unit": fitted["total_unit"],
+                "tolerance": fitted["tolerance"],
+                "expected_working_concentration": fitted["expected_working_concentration"],
+                "expected_unit": fitted["expected_unit"],
+                "reported_working_concentration": reported,
+            }
+        elif isinstance(expression, str) and expression.strip().casefold() == "stoichiometry":
+            equation = item.get("equation")
+            try:
+                fitted = equal_initial_check(quote, equation)
+            except ValueError as exc:
+                return _claim_error(str(exc), claim_id)
+            claim["expression"] = "stoichiometry"
+            claim["equation"] = equation.strip()
+            claim["reported"] = reported
+            claim["computed"] = fitted["computed"]
+            claim["computed_unit"] = fitted["computed_unit"]
+            claim["relative_difference"] = fitted["relative_difference"]
+            claim["fit_status"] = fitted["status"]
+            claim["metering"] = {
+                "left": fitted["left"],
+                "left_unit": fitted["left_unit"],
+                "right": fitted["right"],
+                "right_unit": fitted["right_unit"],
+                "tolerance": fitted["tolerance"],
+                "claimed_equal": fitted["claimed_equal"],
+            }
         else:
             try:
                 computed = evaluate_expression(expression, quote)
@@ -426,6 +551,7 @@ def _judge_against_sentence(job, claim, args, verdict):
     page = job.references[url]
     if claim["kind"] == "method":
         judgment = _judge_method(claim, sentence, args.get("literature_span"), job.experiment_name)
+        judgment = _apply_model_method_verdict(judgment, verdict)
     else:
         judgment = _judge_value(claim, sentence, job.experiment_name)
     judgment.update(
@@ -440,6 +566,55 @@ def _judge_against_sentence(job, claim, args, verdict):
         }
     )
     return judgment
+
+
+def _apply_model_method_verdict(judgment, verdict):
+    # Only the model may soften a program "contradicts"; it cannot invent errors alone.
+    if judgment.get("status") != "contradicts" or verdict == "contradicts":
+        return judgment
+    if verdict == "not_enough":
+        reason = "model_caution"
+        note = "模型认为证据还不足以下结论，暂不把报告记为最终对错。"
+    else:
+        reason = "model_disagrees"
+        note = f"模型判断为「{verdict}」，与程序核对结果「contradicts」不一致，暂不记为最终对错。"
+    updated = dict(judgment)
+    updated.update(
+        {
+            "status": "not_enough",
+            "reason": reason,
+            "program_status": "contradicts",
+            "statement": f"{judgment.get('statement', '')}{note}",
+        }
+    )
+    return updated
+
+
+def _attach_model_notes(judgment, args):
+    explanation = _model_text(args.get("explanation"), 500)
+    improvement = _model_text(args.get("improvement"), 500)
+    if explanation:
+        judgment["explanation"] = explanation
+    if improvement:
+        judgment["improvement"] = improvement
+
+
+def _model_text(value, limit):
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if len(text) < 4:
+        return None
+    return text[:limit]
+
+
+def _with_model_notes(payload, items):
+    for key in ("explanation", "improvement"):
+        for item in reversed(items):
+            if item.get(key):
+                payload[key] = item[key]
+                break
+    return payload
 
 
 def _judge_method(claim, sentence, literature_span, experiment=""):
@@ -549,7 +724,8 @@ def _judge_value(claim, sentence, experiment=""):
 
 
 def _judge_calculation(claim, verdict):
-    if claim.get("expression") in {"arrhenius", "rate"}:
+    expression = claim.get("expression")
+    if expression in {"arrhenius", "rate", "dilution", "stoichiometry"}:
         compared = {
             "status": claim["fit_status"],
             "computed": claim["computed"],
@@ -558,21 +734,8 @@ def _judge_calculation(claim, verdict):
         }
     else:
         compared = calculation_status(claim["computed"], claim["reported"])
-    if claim.get("expression") == "rate":
-        lead = f"按反应式「{claim['equation']}」把计量数当作级数，"
-    else:
-        lead = "按报告原句中的数字计算，"
-    if compared["status"] == "contradicts":
-        statement = (
-            f"{lead}{claim['expression']} = {compared['computed']:.6g}，"
-            f"报告写的是 {claim['reported']}。报告写「{claim['quote']}」。"
-        )
-    else:
-        statement = (
-            f"{lead}{claim['expression']} = {compared['computed']:.6g}，"
-            f"与报告所写 {claim['reported']} 一致。报告写「{claim['quote']}」。"
-        )
-    return {
+    statement = _calculation_statement(claim, compared)
+    judgment = {
         "claim_id": claim["id"],
         "kind": "calculation",
         "status": compared["status"],
@@ -583,6 +746,127 @@ def _judge_calculation(claim, verdict):
         "relative_difference": compared["relative_difference"],
         "model_verdict": verdict,
     }
+    if claim.get("metering"):
+        judgment["metering"] = claim["metering"]
+    if claim.get("expected_working_concentration") is not None:
+        judgment["expected_working_concentration"] = claim["expected_working_concentration"]
+        judgment["expected_unit"] = claim.get("computed_unit")
+    if claim.get("equation"):
+        judgment["equation"] = claim["equation"]
+    return judgment
+
+
+def _calculation_statement(claim, compared):
+    expression = claim.get("expression")
+    quote = claim["quote"]
+    if expression == "dilution":
+        meta = claim.get("metering") or {}
+        lead = (
+            f"按稀释公式 c = c0·V0/V，用母液 {meta.get('stock')} mol/L、"
+            f"移取 {meta.get('aliquot')} {meta.get('aliquot_unit')}、"
+            f"定容 {meta.get('total')} {meta.get('total_unit')} 重算，"
+        )
+        if compared["status"] == "contradicts":
+            return (
+                f"{lead}应得工作浓度约 {compared['computed']:.6g} {claim.get('computed_unit', 'mol/L')}，"
+                f"报告写的是 {claim['reported']}。这是配制计量错误。报告写「{quote}」。"
+            )
+        return (
+            f"{lead}应得工作浓度约 {compared['computed']:.6g} {claim.get('computed_unit', 'mol/L')}，"
+            f"与报告所写 {claim['reported']} 一致。报告写「{quote}」。"
+        )
+    if expression == "stoichiometry":
+        meta = claim.get("metering") or {}
+        lead = (
+            f"反应式「{claim.get('equation', '')}」按二级等浓度处理时，"
+            f"原句浓度分别为 {meta.get('left')} {meta.get('left_unit')} 与 "
+            f"{meta.get('right')} {meta.get('right_unit')}，相对差 {compared['relative_difference']:.1%}。"
+        )
+        if compared["status"] == "contradicts":
+            return f"{lead}报告写了等浓度假设，但两边浓度不一致，属于计量/设计错误。报告写「{quote}」。"
+        if compared["status"] == "not_enough":
+            return f"{lead}原句未写等浓度假设，不能据此记为计量错误。报告写「{quote}」。"
+        return f"{lead}两边浓度在容差内，等浓度假设成立。报告写「{quote}」。"
+    if expression == "rate":
+        lead = f"按反应式「{claim['equation']}」把计量数当作级数，"
+    else:
+        lead = "按报告原句中的数字计算，"
+    if compared["status"] == "contradicts":
+        return (
+            f"{lead}{expression} = {compared['computed']:.6g}，"
+            f"报告写的是 {claim['reported']}。报告写「{quote}」。"
+        )
+    return (
+        f"{lead}{expression} = {compared['computed']:.6g}，"
+        f"与报告所写 {claim['reported']} 一致。报告写「{quote}」。"
+    )
+
+
+def _causal_notes(confirmed, claims):
+    by_id = {claim["id"]: claim for claim in claims}
+    metering_ids = []
+    value_ids = []
+    expected_bits = []
+    for item in confirmed:
+        claim = by_id.get(item["claim_id"])
+        if claim is None:
+            continue
+        if claim["kind"] == "calculation" and claim.get("expression") in {"dilution", "stoichiometry"}:
+            metering_ids.append(claim["id"])
+            if claim.get("expression") == "dilution" and claim.get("expected_working_concentration") is not None:
+                unit = claim.get("computed_unit") or "mol/L"
+                expected_bits.append(
+                    f"主张 {claim['id']} 按稀释公式应得工作浓度约 "
+                    f"{claim['expected_working_concentration']:.6g} {unit}，"
+                    f"报告声明为 {claim['reported']} {unit}"
+                )
+        elif claim["kind"] == "value":
+            value_ids.append(claim["id"])
+    if not metering_ids or not value_ids:
+        return []
+    detail = "；".join(expected_bits)
+    statement = (
+        "同一报告中配制/等浓度计量主张与速率常数或活化能均已证实错误。"
+        "结果偏差应优先排查移取体积、定容体积、工作浓度和等浓度假设是否算错或用不一致，"
+        "而不是先把问题只归到曲线拟合。"
+    )
+    if detail:
+        statement = f"{statement}{detail}。"
+    return [
+        {
+            "kind": "metering_may_cause_value_error",
+            "metering_claim_ids": metering_ids,
+            "value_claim_ids": value_ids,
+            "statement": statement,
+        }
+    ]
+
+
+_CLAIM_HINTS = {
+    "dilution_missing_reported_concentration": "原句里找不到与 reported 一致的工作浓度，请把声明的工作浓度数字原样填入 reported。",
+    "dilution_missing_stock_concentration": "原句需写出母液浓度，并且与工作浓度是两个不同的数字。",
+    "dilution_missing_volumes": "原句需同时写出移取体积和定容体积，例如 10.0 mL 与 100 mL。",
+    "dilution_ambiguous_volumes": "原句里体积多于两个，请把稀释相关的移取体积和定容体积写进同一连续原句。",
+    "dilution_invalid_volumes": "移取体积必须小于定容体积，且两者都大于 0。",
+    "stoichiometry_need_two_reactants": "等浓度核对需要反应式左侧至少两种反应物。",
+    "stoichiometry_missing_concentrations": "原句需写出至少两个摩尔浓度，才能核对等浓度假设。",
+    "equation_required": "equation 必须是 quote 中的连续反应式原文。",
+    "arrhenius_data_required": "原句需至少两组温度和对应速率常数，以及要核对的活化能数字。",
+    "rate_law_data_required": "原句需有反应式、一个速率常数、足够浓度，以及要核对的反应速率数字。",
+    "reported_required": "reported 必须是 quote 中出现的完整数字字符串。",
+    "kinetic_conditions_required": "数值主张的 dosage、temperature、method 都必须是 quote 里的短原文。",
+    "quantity_not_in_class": "quantity 只能是速率常数或活化能，且必须出现在 quote 中。",
+    "quantity_number_required": "quote 里 quantity 附近需要紧邻可解析的数字和单位。",
+    "candidate_required": "quote 必须来自 propose_candidates 返回的候选句，或传入对应的 candidate_id。",
+}
+
+
+def _claim_error(code, claim_id):
+    item = {"error": code, "id": claim_id}
+    hint = _CLAIM_HINTS.get(code)
+    if hint:
+        item["hint"] = hint
+    return None, item
 
 
 def _store_judgment(job, judgment):
@@ -603,19 +887,31 @@ def _resolve_claim(claim, items):
     decisive = [item for item in items if item["status"] in {"supports", "contradicts"}]
     statuses = {item["status"] for item in decisive}
     if statuses == {"supports", "contradicts"}:
-        return "insufficient", {
-            "claim_id": claim["id"],
-            "kind": claim["kind"],
-            "status": "literature_inconsistent",
-            "statement": "不同文献对这一主张的结论不一致，不能据此判断报告错误。",
-            "items": items,
-        }
+        return "insufficient", _with_model_notes(
+            {
+                "claim_id": claim["id"],
+                "kind": claim["kind"],
+                "status": "literature_inconsistent",
+                "statement": "不同文献对这一主张的结论不一致，不能据此判断报告错误。",
+                "items": items,
+            },
+            items,
+        )
     if statuses == {"contradicts"}:
-        return "confirmed_errors", {"claim_id": claim["id"], "kind": claim["kind"], "status": "contradicts", "statement": decisive[-1]["statement"], "items": decisive}
+        return "confirmed_errors", _with_model_notes(
+            {"claim_id": claim["id"], "kind": claim["kind"], "status": "contradicts", "statement": decisive[-1]["statement"], "items": decisive},
+            decisive,
+        )
     if statuses == {"supports"}:
-        return "supported", {"claim_id": claim["id"], "kind": claim["kind"], "status": "supports", "statement": decisive[-1]["statement"], "items": decisive}
+        return "supported", _with_model_notes(
+            {"claim_id": claim["id"], "kind": claim["kind"], "status": "supports", "statement": decisive[-1]["statement"], "items": decisive},
+            decisive,
+        )
     latest = items[-1]
-    return "insufficient", {"claim_id": claim["id"], "kind": claim["kind"], "status": latest["status"], "statement": latest["statement"], "items": items}
+    return "insufficient", _with_model_notes(
+        {"claim_id": claim["id"], "kind": claim["kind"], "status": latest["status"], "statement": latest["statement"], "items": items},
+        items,
+    )
 
 
 def _resolve_values(claim, items):
@@ -625,28 +921,43 @@ def _resolve_values(claim, items):
         spread = (max(bases) - min(bases)) / max(abs(sum(bases) / len(bases)), 1e-12)
         allowed = max(item["tolerance"] for item in comparable)
         if spread > allowed:
-            return "insufficient", {
+            return "insufficient", _with_model_notes(
+                {
+                    "claim_id": claim["id"],
+                    "kind": "value",
+                    "status": "literature_inconsistent",
+                    "statement": f"文献给出的{claim['quantity']}彼此不一致，不能据此判断报告错误。",
+                    "items": items,
+                },
+                items,
+            )
+    statuses = {item["status"] for item in comparable}
+    if statuses == {"contradicts"}:
+        return "confirmed_errors", _with_model_notes(
+            {"claim_id": claim["id"], "kind": "value", "status": "contradicts", "statement": comparable[-1]["statement"], "items": comparable},
+            comparable,
+        )
+    if statuses == {"supports"}:
+        return "supported", _with_model_notes(
+            {"claim_id": claim["id"], "kind": "value", "status": "supports", "statement": comparable[-1]["statement"], "items": comparable},
+            comparable,
+        )
+    if len(statuses) > 1:
+        return "insufficient", _with_model_notes(
+            {
                 "claim_id": claim["id"],
                 "kind": "value",
                 "status": "literature_inconsistent",
                 "statement": f"文献给出的{claim['quantity']}彼此不一致，不能据此判断报告错误。",
                 "items": items,
-            }
-    statuses = {item["status"] for item in comparable}
-    if statuses == {"contradicts"}:
-        return "confirmed_errors", {"claim_id": claim["id"], "kind": "value", "status": "contradicts", "statement": comparable[-1]["statement"], "items": comparable}
-    if statuses == {"supports"}:
-        return "supported", {"claim_id": claim["id"], "kind": "value", "status": "supports", "statement": comparable[-1]["statement"], "items": comparable}
-    if len(statuses) > 1:
-        return "insufficient", {
-            "claim_id": claim["id"],
-            "kind": "value",
-            "status": "literature_inconsistent",
-            "statement": f"文献给出的{claim['quantity']}彼此不一致，不能据此判断报告错误。",
-            "items": items,
-        }
+            },
+            items,
+        )
     latest = items[-1]
-    return "insufficient", {"claim_id": claim["id"], "kind": "value", "status": latest["status"], "statement": latest["statement"], "items": items}
+    return "insufficient", _with_model_notes(
+        {"claim_id": claim["id"], "kind": "value", "status": latest["status"], "statement": latest["statement"], "items": items},
+        items,
+    )
 
 
 def _required_phrases(claim):
@@ -670,6 +981,7 @@ def _compact(text):
 TOOLS = {
     "read_report": read_report,
     "record_report": record_report,
+    "propose_candidates": propose_candidates,
     "extract_claims": extract_claims,
     "search_references": search_references,
     "search_solution_kinetics": search_solution_kinetics,
@@ -717,8 +1029,16 @@ TOOL_SPECS = [
     {
         "type": "function",
         "function": {
+            "name": "propose_candidates",
+            "description": "程序扫描报告，枚举可核对的候选原句（value/method/calculation 标签与数字）。extract_claims 的 quote 必须落在这些候选句内，或传入 candidate_id。",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "extract_claims",
-            "description": "从溶液反应动力学报告抽出主张。只核对速率常数、活化能和温度做法。quote 必须是报告原句。value 还要给 dosage、temperature、method。calculation 的 expression 可以是 arrhenius，或 rate。rate 要给反应式 equation，程序按计量数和报告里的速率常数、浓度计算应有速率。",
+            "description": "从 propose_candidates 的候选句中点选主张。quote 必须落在候选句内，推荐同时给 candidate_id。核对速率常数、活化能、温度做法，以及配制计量与等浓度假设。value 还要给 dosage、temperature、method。calculation 的 expression 可以是 arrhenius、rate、dilution、stoichiometry，或普通算式。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -729,15 +1049,25 @@ TOOL_SPECS = [
                             "properties": {
                                 "id": {"type": "string"},
                                 "kind": {"type": "string", "enum": ["method", "value", "calculation"]},
-                                "quote": {"type": "string", "description": "报告中的连续原句"},
+                                "quote": {"type": "string", "description": "候选句中的连续原句"},
+                                "candidate_id": {"type": "string", "description": "propose_candidates 返回的候选编号"},
                                 "slot": {"type": "string", "description": "方法主张里被核对的做法，必须出现在 quote 中"},
                                 "quantity": {"type": "string", "description": "只能是速率常数或活化能，必须出现在 quote 中并紧邻数字"},
                                 "dosage": {"type": "string", "description": "用量或浓度，必须是 quote 中的短原文"},
                                 "temperature": {"type": "string", "description": "温度条件，必须是 quote 中的短原文"},
                                 "method": {"type": "string", "description": "测定方法，必须是 quote 中的短原文"},
-                                "expression": {"type": "string", "description": "arrhenius、rate，或只含报告原句中的数字和加减乘除括号"},
-                                "equation": {"type": "string", "description": "反应式，必须是 quote 中的连续原文。expression 为 rate 时必填"},
-                                "reported": {"type": "string", "description": "报告写出的计算结果，必须是 quote 中的完整数字"},
+                                "expression": {
+                                    "type": "string",
+                                    "description": "arrhenius、rate、dilution、stoichiometry，或只含报告原句中的数字和加减乘除括号",
+                                },
+                                "equation": {
+                                    "type": "string",
+                                    "description": "反应式，必须是 quote 中的连续原文。expression 为 rate 或 stoichiometry 时必填",
+                                },
+                                "reported": {
+                                    "type": "string",
+                                    "description": "报告写出的计算结果，必须是 quote 中的完整数字；dilution 为声明的工作浓度",
+                                },
                             },
                             "required": ["id", "kind", "quote"],
                             "additionalProperties": False,
@@ -753,7 +1083,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "search_references",
-            "description": "按一条主张联网检索公开网页。claim_id 对应该主张。摘要不能直接用于判断，需要时调用 read_reference。溶液速率常数优先用 search_solution_kinetics，酶动力学优先用 search_enzyme_kinetics。",
+            "description": "按一条主张检索公开网页；联网失败或无结果时回退到项目 reference_cache/ 本地缓存。claim_id 对应该主张。摘要不能直接用于判断，需要时调用 read_reference。溶液速率常数优先用 search_solution_kinetics，酶动力学优先用 search_enzyme_kinetics。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -817,7 +1147,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "read_reference",
-            "description": "打开联网检索结果中的公开页面，按句切开并建立本次运行的内存向量。url 必须来自 search_references 或 retry_claim。数据库工具返回的记录已经带有原文，直接 select_evidence。",
+            "description": "打开检索结果中的公开页面；若 url 在 reference_cache/ 缓存中则直接读本地原文。按句切开并建立本次运行的内存向量。url 必须来自 search_references 或 retry_claim。数据库工具返回的记录已经带有原文，直接 select_evidence。",
             "parameters": {
                 "type": "object",
                 "properties": {"url": {"type": "string"}},
@@ -830,12 +1160,13 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "select_evidence",
-            "description": "用主张对已打开页面做向量检索，只返回最接近的句子。judge_claim 只能引用这些 sentence_id。",
+            "description": "用主张对已打开页面做向量检索。先硬过滤同一反应、测定方法与温度，再排序；通不过的句子不进入可选集合。可用 focus。judge_claim 只能引用返回的 sentence_id。若无合格句则 abstain。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "claim_id": {"type": "string"},
                     "url": {"type": "string"},
+                    "focus": {"type": "string", "description": "模型补充的检索焦点，例如同一测定方法或同一反应写法"},
                 },
                 "required": ["claim_id", "url"],
                 "additionalProperties": False,
@@ -846,7 +1177,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "judge_claim",
-            "description": "判断一条溶液反应动力学主张。方法要给 literature_span，必须是选中文献句里的做法。文献句还要出现报告里的 slot，程序才比较两者是否同一句；文献没讨论这一步时不能记为错误。速率常数和活化能不随初始用量改变，用量不同仍按同一温度和同一测定方法比较数字。电导法用量高于 0.20 mol/L 时条件不合理。活化能还接受文献写明与用量无关。expression 为 arrhenius 时用报告自己的数据重算活化能；为 rate 时按反应式和报告里的速率常数、浓度计算应有速率。这两种计算都不检索。",
+            "description": "判断一条溶液反应动力学主张。模型必须给出 verdict，并尽量写 explanation；若认为有错还要写 improvement。方法要给 literature_span。方法主张上，程序判为错误时若模型给 supports 或 not_enough，最终记为证据不足；模型不能单独把方法主张判错。数值主张的对错仍由程序按温度、测定方法和数字容差决定。dilution/stoichiometry/arrhenius/rate 由程序验算，不检索。电导法用量高于 0.20 mol/L 时条件不合理。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -855,6 +1186,8 @@ TOOL_SPECS = [
                     "url": {"type": "string", "description": "select_evidence 使用的页面"},
                     "sentence_id": {"type": "string", "description": "select_evidence 返回的句子编号"},
                     "literature_span": {"type": "string", "description": "文献句中要求的做法，必须是选中句子里的连续原文"},
+                    "explanation": {"type": "string", "description": "模型对这次判断的简要说明，不编造原句外的内容"},
+                    "improvement": {"type": "string", "description": "若认为报告有错，写可执行的改进建议"},
                 },
                 "required": ["claim_id", "verdict"],
                 "additionalProperties": False,
@@ -865,8 +1198,14 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "finish_review",
-            "description": "汇总输入报告的判断。结果分成已证实的错误、文献支持、证据不足。文献彼此不一致时不把报告判错。",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "description": "汇总输入报告的判断。结果分成已证实的错误、文献支持、证据不足。计量主张与动力学数值同时出错时，程序会写入 causal_notes。请写 summary 概括主要问题和改进方向。文献彼此不一致时不把报告判错。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "模型对整份报告审查结果的概括与改进建议"},
+                },
+                "additionalProperties": False,
+            },
         },
     },
 ]

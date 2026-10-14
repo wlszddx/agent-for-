@@ -61,7 +61,7 @@ class Experiment:
         return self.module.INSTRUCTIONS
 
     def export_table(self):
-        from repro.table import write_rows
+        from kinetics_audit.table import write_rows
 
         path = self.root / "runs.csv"
         write_rows(path, self.measurements())

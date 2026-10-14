@@ -1,5 +1,5 @@
 [project]
-name = "exp-repro"
+name = "kinetics-audit"
 version = "0.1.0"
-description = "乙酸乙酯皂化实验复现与验收"
+description = "Solution kinetics lab-report audit for Agnes / AGH"
 requires-python = ">=3.10"

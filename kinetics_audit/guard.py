@@ -14,7 +14,7 @@ BANNED_CALLS = {
     "breakpoint",
     "help",
 }
-BASE_SEALED = ("repro.", "experiments.")
+BASE_SEALED = ("kinetics_audit.", "experiments.")
 
 
 class GuardError(ValueError):

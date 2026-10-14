@@ -5,6 +5,8 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
+from kinetics_audit.reference_store import offline_page, offline_search
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -13,6 +15,30 @@ _TAGS = re.compile(r"(?is)<(script|style).*?>.*?</\1>|<[^>]+>")
 
 
 def search_web(query):
+    found = []
+    try:
+        found = _search_bing(query)
+    except (OSError, ET.ParseError, ValueError, TimeoutError):
+        found = []
+    if not found:
+        found = offline_search(query)
+    return found
+
+
+def fetch_page(url):
+    cached = offline_page(url)
+    if cached is not None:
+        return cached[:6000]
+    if not _public_https(url):
+        raise ValueError("url")
+    try:
+        payload = _get(url, 200_000)
+    except (OSError, ValueError, TimeoutError):
+        raise ValueError("fetch_failed") from None
+    return _plain(payload.decode("utf-8", "replace"))[:6000]
+
+
+def _search_bing(query):
     url = "https://cn.bing.com/search?format=rss&q=" + urllib.parse.quote(query)
     payload = _get(url, 500_000)
     root = ET.fromstring(payload)
@@ -31,13 +57,6 @@ def search_web(query):
         if len(found) == 8:
             break
     return found
-
-
-def fetch_page(url):
-    if not _public_https(url):
-        raise ValueError("url")
-    payload = _get(url, 200_000)
-    return _plain(payload.decode("utf-8", "replace"))[:6000]
 
 
 def _get(url, limit):

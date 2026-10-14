@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "repro": {
+    "kinetics_audit": {
       "command": "py",
-      "args": ["-3", "serve_mcp.py"]
+      "args": ["-3", "mcp_server.py"]
     }
   }
 }
