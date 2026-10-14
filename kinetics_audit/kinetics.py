@@ -18,12 +18,30 @@ _ENERGY_DIMENSIONS = ("energy",)
 
 
 def quantity_kind(name):
-    text = name or ""
-    if "活化能" in text:
+    """数值主张的物理量类别：溶液动力学报告审核范围内允许速率常数与活化能。"""
+    text = (name or "").strip()
+    folded = text.casefold().replace(" ", "")
+    if "活化能" in text or folded in {"ea", "e_a", "eₐ"} or folded.startswith("ea(") or folded.startswith("e_a("):
         return "activation_energy"
-    if "速率常数" in text:
+    if (
+        "速率常数" in text
+        or "rateconstant" in folded
+        or "表观速率常数" in text
+        or folded in {"kobs", "k_obs"}
+    ):
+        return "rate"
+    if folded == "k" or folded.startswith("k(") or folded.startswith("k（"):
         return "rate"
     return None
+
+
+def canonical_quantity(name):
+    kind = quantity_kind(name)
+    if kind == "activation_energy":
+        return "活化能"
+    if kind == "rate":
+        return "速率常数"
+    return (name or "").strip()
 
 
 def accepted_dimensions(kind):

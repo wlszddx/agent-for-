@@ -37,6 +37,28 @@ def offline_page(url):
     return None
 
 
+def pages_matching(tags, limit=6):
+    """按标签命中缓存页（用于实验类锚点，不写死某一课题）。"""
+    needles = [_fold(tag) for tag in (tags or []) if tag]
+    needles = [n for n in needles if n]
+    if not needles:
+        return []
+    hits = []
+    seen = set()
+    for page in _pages():
+        page_tags = [_fold(tag) for tag in (page.get("tags") or [])]
+        if not any(needle in " ".join(page_tags) or any(needle in tag or tag in needle for tag in page_tags) for needle in needles):
+            continue
+        url = page.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        hits.append(page)
+        if len(hits) >= limit:
+            break
+    return hits
+
+
 def _pages():
     global _INDEX
     if _INDEX is None:

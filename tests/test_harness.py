@@ -10,7 +10,12 @@ from kinetics_audit.databases import enzyme_record, solution_links, solution_rec
 from kinetics_audit.guard import GuardError, check_source
 from kinetics_audit.numbers import measurements, number_tokens
 from kinetics_audit.reference_store import offline_page, offline_search
-from kinetics_audit.report_file import extract_report, locate_report
+from kinetics_audit.report_file import (
+    _kinetics_sentences_from_text,
+    _table_to_sentences,
+    extract_report,
+    locate_report,
+)
 from kinetics_audit.sandbox import execute
 from kinetics_audit.search import fetch_page, search_web, useful_result
 from kinetics_audit.tools import Job, dispatch
@@ -758,6 +763,52 @@ class HarnessTest(unittest.TestCase):
         found = measurements("测得活化能为 300 kJ/mol。")
         self.assertEqual([item["number"] for item in found], ["300"])
 
+    def test_pdf_tables_become_claim_sentences(self):
+        table = [
+            ["c0(mol/L)", "T", "k(L/mol/min)"],
+            ["0.0101", "25℃", "5.193"],
+            ["0.0100", "35℃", "5.113"],
+        ]
+        sentences = _table_to_sentences(table)
+        self.assertTrue(any("5.193" in line and "0.0101" in line for line in sentences), sentences)
+        # 整页误识别：超长单格应丢弃
+        self.assertEqual(_table_to_sentences([["x" * 200, "y"], ["a", "b"]]), [])
+        flat = (
+            "数据处理 c(mol/L)=0.010125C 时间 电导率 "
+            "a=-0.118 b=0.0525 k(L/mol/min)=5.193 t/min "
+            "文献报道25 ℃ 速率6.4254（L/mol/min）"
+        )
+        synthesized = _kinetics_sentences_from_text(flat)
+        self.assertTrue(
+            any("5.193" in line and "0.0101" in line and "25摄氏度" in line for line in synthesized),
+            synthesized,
+        )
+        self.assertTrue(any("6.4254" in line for line in synthesized), synthesized)
+        job = Job.closed()
+        report = flat + "\n" + "\n".join(synthesized)
+        _report(job, report, "乙酸乙酯皂化")
+        prop = dispatch(job, "propose_candidates", {})
+        hit = next(c for c in prop["candidates"] if "5.193" in c["quote"] and "速率常数" in c["quote"])
+        extracted = dispatch(
+            job,
+            "extract_claims",
+            {
+                "claims": [
+                    {
+                        "id": "v1",
+                        "kind": "value",
+                        "quote": hit["quote"],
+                        "candidate_id": hit["id"],
+                        "quantity": "速率常数",
+                        "dosage": "0.0101 mol/L",
+                        "temperature": "25摄氏度",
+                        "method": "电导法",
+                    }
+                ]
+            },
+        )
+        self.assertTrue(extracted["ok"], extracted)
+
     def test_report_documents_are_read_and_photos_are_not(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -924,6 +975,92 @@ class HarnessTest(unittest.TestCase):
         )
         self.assertFalse(bad["ok"])
         self.assertEqual(bad["rejected"][0]["error"], "quote_not_in_report")
+
+    def test_table_k_labels_extract_as_rate_claims(self):
+        report = (
+            "乙酸乙酯皂化用电导法测定。\n"
+            "c0(mol/L)= 0.0101 25℃\n"
+            "k(L/mol/min)= 5.193\n"
+            "c0(mol/L)= 0.0100 35℃\n"
+            "k(L/mol/min)= 5.113\n"
+        )
+        spaced = (
+            "conductivity method. "
+            "c 0 (mol/L)= 0.0101 25 C "
+            "k(L/mol/min)= 5.193 "
+            "k(L/mol/min)= 5.113"
+        )
+        spaced_job = Job.closed()
+        _report(spaced_job, spaced)
+        spaced_prop = dispatch(spaced_job, "propose_candidates", {})
+        spaced_hits = [
+            item
+            for item in spaced_prop["candidates"]
+            if "5.193" in item["quote"] and "0.0101" in item["quote"] and len(item["quote"]) < 300
+        ]
+        self.assertTrue(spaced_hits, spaced_prop["candidates"])
+        spaced_ok = dispatch(
+            spaced_job,
+            "extract_claims",
+            {
+                "claims": [
+                    {
+                        "id": "v1",
+                        "kind": "value",
+                        "quote": spaced_hits[0]["quote"],
+                        "candidate_id": spaced_hits[0]["id"],
+                        "quantity": "k",
+                        "dosage": "0.0101",
+                        "temperature": "25℃",
+                        "method": "电导法",
+                    }
+                ]
+            },
+        )
+        self.assertTrue(spaced_ok["ok"], spaced_ok)
+        self.assertTrue(any(item["number"] == "5.193" for item in measurements(report)))
+        job = Job.closed()
+        _report(job, report)
+        proposed = dispatch(job, "propose_candidates", {})
+        self.assertTrue(proposed["ok"])
+        value_rows = [
+            item
+            for item in proposed["candidates"]
+            if "value" in item["kinds"] and "5.193" in item["quote"] and "0.0101" in item["quote"] and "25℃" in item["quote"]
+        ]
+        self.assertTrue(value_rows, proposed["candidates"])
+        quote = value_rows[0]["quote"]
+        extracted = dispatch(
+            job,
+            "extract_claims",
+            {
+                "claims": [
+                    {
+                        "id": "v1",
+                        "kind": "value",
+                        "quote": quote,
+                        "candidate_id": value_rows[0]["id"],
+                        "quantity": "速率常数",
+                        "dosage": "0.0101",
+                        "temperature": "25℃",
+                        "method": "电导法",
+                    },
+                    {
+                        "id": "v2",
+                        "kind": "value",
+                        "quote": quote,
+                        "candidate_id": value_rows[0]["id"],
+                        "quantity": "k",
+                        "dosage": "0.0101",
+                        "temperature": "25℃",
+                        "method": "电导法",
+                    },
+                ]
+            },
+        )
+        self.assertTrue(extracted["ok"], extracted)
+        self.assertEqual(extracted["claims"][0]["quantity"], "速率常数")
+        self.assertEqual(extracted["claims"][1]["quantity"], "速率常数")
 
 
 if __name__ == "__main__":

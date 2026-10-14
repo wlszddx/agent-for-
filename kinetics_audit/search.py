@@ -20,9 +20,14 @@ def search_web(query):
         found = _search_bing(query)
     except (OSError, ET.ParseError, ValueError, TimeoutError):
         found = []
+    offline = offline_search(query)
     if not found:
-        found = offline_search(query)
-    return found
+        return offline
+    # 本地缓存优先插入：避免 Bing 命中化学品页时永远用不上 reference_cache
+    if offline:
+        seen = {item["url"] for item in offline}
+        found = offline + [item for item in found if item.get("url") not in seen]
+    return found[:8]
 
 
 def fetch_page(url):

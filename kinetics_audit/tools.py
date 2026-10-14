@@ -1,13 +1,16 @@
 import json
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-from kinetics_audit.candidates import match_candidate, propose_from_report
+from kinetics_audit.candidates import match_candidate, propose_from_report, recommended_claims
+from kinetics_audit.priors import frame_report
 from kinetics_audit.databases import remember, search_enzyme, search_solution
 from kinetics_audit.kinetics import (
     accepted_dimensions,
     arrhenius_ea,
+    canonical_quantity,
     comparable,
     dilution_concentration,
     dosage_differs,
@@ -24,6 +27,7 @@ from kinetics_audit.numbers import (
     measurements,
     near_quantity,
     number_tokens,
+    quantity_places,
 )
 from kinetics_audit.report_file import extract_report, locate_report
 from kinetics_audit.search import fetch_page, search_web
@@ -50,6 +54,7 @@ class Job:
         self.review = None
         self.retries = set()
         self.candidates = []
+        self.frame = None
 
     @classmethod
     def closed(cls):
@@ -68,7 +73,40 @@ def _bind_report(job, experiment, text):
     job.review = None
     job.retries = set()
     job.candidates = []
+    job.frame = None
     return {"ok": True, "experiment": name, "chars": len(job.report_text)}
+
+
+def frame_experiment(job, _args):
+    """像人一样：先完整判断报告在讲什么，再给出用得上的文献需求（不直接判错）。"""
+    if not job.report_text:
+        return {"ok": False, "error": "report_required"}
+    card = frame_report(job.experiment_name, job.report_text)
+    job.frame = card
+    return {
+        "ok": True,
+        "report_about": card.get("report_about"),
+        "what_to_verify": card.get("what_to_verify"),
+        "literature_needs": card.get("literature_needs"),
+        "frame": card,
+        "note": (
+            "第一步只理解报告：向用户用 report_about 说明「这份报告讲什么」。"
+            "第二步再抽主张。第三步严格按 literature_needs 的 query / prefer_url 找文献，"
+            "不得先撞 NIST 再倒推报告内容。"
+        ),
+    }
+
+
+def _require_frame(job):
+    if job.frame:
+        return None
+    if not job.report_text:
+        return {"ok": False, "error": "report_required"}
+    return {
+        "ok": False,
+        "error": "frame_required",
+        "hint": "请先调用 frame_experiment，完整判断报告在讲什么，再检索文献。",
+    }
 
 
 def read_report(job, args):
@@ -112,7 +150,26 @@ def propose_candidates(job, _args):
     if not job.report_text:
         return {"ok": False, "error": "report_required"}
     job.candidates = propose_from_report(job.report_text, job.experiment_name)
-    return {"ok": True, "count": len(job.candidates), "candidates": job.candidates}
+    recommended = recommended_claims(job.candidates)
+    return {
+        "ok": True,
+        "count": len(job.candidates),
+        "candidates": job.candidates,
+        "recommended_claims": recommended,
+        "note": "若有 recommended_claims，请立刻用 extract_claims 原样提交它们，不要改 quote。",
+    }
+
+
+def extract_recommended_claims(job, _args):
+    """一键采纳程序生成的速率常数主张，避免模型点选表格长行失败。"""
+    if not job.report_text:
+        return {"ok": False, "error": "report_required"}
+    if not job.candidates:
+        job.candidates = propose_from_report(job.report_text, job.experiment_name)
+    drafts = recommended_claims(job.candidates)
+    if not drafts:
+        return {"ok": False, "error": "no_recommended_claims", "hint": "报告中没有可自动抽取的速率常数短句。"}
+    return extract_claims(job, {"claims": drafts})
 
 
 def extract_claims(job, args):
@@ -121,8 +178,15 @@ def extract_claims(job, args):
     if not job.candidates:
         job.candidates = propose_from_report(job.report_text, job.experiment_name)
     claims = args.get("claims")
+    auto = bool(args.get("_auto_recommended"))
     if not isinstance(claims, list) or not claims:
-        return {"ok": False, "error": "claims_required"}
+        # 空列表时自动走推荐主张，避免模型交白卷
+        drafts = recommended_claims(job.candidates)
+        if drafts:
+            claims = drafts
+            auto = True
+        else:
+            return {"ok": False, "error": "claims_required"}
     accepted = []
     rejected = []
     seen = set()
@@ -134,6 +198,11 @@ def extract_claims(job, args):
         seen.add(claim["id"])
         accepted.append(claim)
     if rejected or not accepted:
+        # 手工点选全失败时，回退到推荐主张（只回退一次）
+        if not auto:
+            drafts = recommended_claims(job.candidates)
+            if drafts:
+                return extract_claims(job, {"claims": drafts, "_auto_recommended": True})
         job.rejections.append({"tool": "extract_claims", "items": rejected or [{"error": "claims_required"}]})
         return {"ok": False, "claims": accepted, "rejected": rejected or [{"error": "claims_required"}]}
     job.claims = accepted
@@ -144,10 +213,18 @@ def extract_claims(job, args):
 
 
 def search_references(job, args):
+    blocked = _require_frame(job)
+    if blocked:
+        return blocked
     query = args.get("query")
     claim_id = args.get("claim_id")
+    # 若未给 query，自动用 literature_needs 第一条
+    if (not isinstance(query, str) or not query.strip()) and job.frame:
+        needs = job.frame.get("literature_needs") or []
+        if needs and needs[0].get("query"):
+            query = needs[0]["query"]
     if not isinstance(query, str) or not query.strip() or len(query) > 200:
-        return {"ok": False, "error": "query_required"}
+        return {"ok": False, "error": "query_required", "hint": "请使用 frame.literature_needs[].query"}
     if claim_id is not None and not any(claim["id"] == claim_id for claim in job.claims):
         return {"ok": False, "error": "unknown_claim", "id": claim_id}
     if any(item.get("claim_id") == claim_id and item.get("kind") == "web" for item in job.searches):
@@ -178,7 +255,7 @@ def retry_claim(job, args):
         return {"ok": False, "error": "judgment_required", "id": claim_id}
     if items[-1]["status"] not in {"not_comparable", "not_enough"}:
         return {"ok": False, "error": "retry_not_applicable", "id": claim_id, "status": items[-1]["status"]}
-    query = _retry_query(claim, job.experiment_name)
+    query = _retry_query(claim, job.experiment_name, job.frame)
     job.retries.add(claim_id)
     try:
         found = search_web(query)
@@ -207,20 +284,40 @@ def _store_web_hits(job, claim_id, query, found, kind):
     job.searches.append({"claim_id": claim_id, "query": query, "urls": [item["url"] for item in found], "kind": kind})
 
 
-def _retry_query(claim, experiment=""):
+def _retry_query(claim, experiment="", frame=None):
     parts = []
+    subject = ((frame or {}).get("subject") or experiment or "").strip()
+    if subject:
+        parts.append(subject)
     blob = f"{experiment} {claim.get('quote') or ''}"
-    for word in ("乙酸乙酯", "皂化", "NaOH", "氢氧化钠"):
+    for word in ("皂化", "碱催化水解", "电导法", "NaOH", "氢氧化钠"):
         if word in blob and word not in parts:
             parts.append(word)
     if claim["kind"] == "method":
-        parts.extend([claim["slot"], "溶液反应动力学"])
+        parts.extend([claim["slot"], "测定方法", "溶液反应动力学"])
     else:
         parts.extend([claim["quantity"], claim.get("dosage"), claim["temperature"], claim["method"]])
     return (" ".join(part for part in parts if part) + " -百科 -词典")[:200]
 
 
 def search_solution_kinetics(job, args):
+    blocked = _require_frame(job)
+    if blocked:
+        return blocked
+    plan = (job.frame or {}).get("search_plan") or {}
+    family = (job.frame or {}).get("family") or (job.frame or {}).get("legacy_family")
+    # 教学向碱水解/皂化类：NIST 常只有自由基等同名酯条目，会误导检索目的
+    if plan.get("prefer_nist") is False or family in {"alkaline_hydrolysis", "saponification"}:
+        return {
+            "ok": False,
+            "error": "wrong_database_for_class",
+            "hint": (
+                "当前实验类不优先 NIST。请改用 search_references，"
+                "查询词用 frame.search_plan.queries（含皂化/电导法/速率常数）；"
+                "本地 reference_cache 会优先返回可比教学文献。"
+            ),
+            "queries": plan.get("queries") or [],
+        }
     return _search_database(
         job,
         args,
@@ -386,6 +483,8 @@ def finish_review(job, args):
         return {"ok": False, "error": "report_required"}
     if not job.claims:
         return {"ok": False, "error": "claims_required"}
+    if job.frame is None and job.report_text:
+        job.frame = frame_report(job.experiment_name, job.report_text)
     confirmed = []
     supported = []
     insufficient = []
@@ -402,10 +501,25 @@ def finish_review(job, args):
         "insufficient": insufficient,
         "rejected": job.rejections,
     }
+    if job.frame:
+        review["frame"] = {
+            "family": job.frame.get("family"),
+            "label": job.frame.get("label"),
+            "report_about": job.frame.get("report_about"),
+            "what_to_verify": job.frame.get("what_to_verify"),
+            "literature_needs": job.frame.get("literature_needs"),
+            "understanding": job.frame.get("understanding"),
+            "expected_relations": job.frame.get("expected_relations"),
+            "conclusions_seen": job.frame.get("conclusions_seen"),
+            "search_plan": job.frame.get("search_plan"),
+        }
     summary = _model_text(args.get("summary"), 800)
     if summary:
         review["summary"] = summary
-    notes = _causal_notes(confirmed, job.claims)
+    notes = _causal_notes(confirmed, job.claims, job.judgments)
+    relation_notes = _relation_notes(job.frame, job.claims, job.judgments)
+    if relation_notes:
+        notes = list(notes) + relation_notes
     if notes:
         review["causal_notes"] = notes
     job.review = review
@@ -446,15 +560,31 @@ def _parse_claim(job, item, seen):
         dosage = item.get("dosage")
         temperature = item.get("temperature")
         method = item.get("method")
-        if not isinstance(quantity, str) or quantity_kind(quantity) is None or _compact(quantity) not in _compact(quote):
+        qkind = quantity_kind(quantity) if isinstance(quantity, str) else None
+        if qkind is None or not quantity_places(quote, quantity.strip(), qkind):
             return _claim_error("quantity_not_in_class", claim_id)
         fields = {"dosage": dosage, "temperature": temperature, "method": method}
-        if not all(isinstance(value, str) and len(_compact(value)) >= 2 and _compact(value) in _compact(quote) for value in fields.values()):
-            return _claim_error("kinetic_conditions_required", claim_id)
-        if not near_quantity(quote, quantity.strip(), measurements(quote)):
+        quote_compact = _compact(quote)
+        report_compact = _compact(job.report_text)
+        for key, value in fields.items():
+            if not isinstance(value, str) or len(_compact(value)) < 2:
+                return _claim_error("kinetic_conditions_required", claim_id)
+            compact_value = _compact(value)
+            # 表格行常不含测定方法：dosage/temperature 必须落在 quote，method 可在全文或别名
+            if key == "method":
+                if not _condition_in_text(compact_value, quote_compact, report_compact, method=True):
+                    return _claim_error("kinetic_conditions_required", claim_id)
+            elif compact_value not in quote_compact:
+                # PDF 常见「25 C」无℃：温度数字落在 quote 即可
+                if key == "temperature" and any(ch.isdigit() for ch in value) and _compact(
+                    "".join(ch for ch in value if ch.isdigit() or ch == ".")
+                ) in quote_compact:
+                    continue
+                return _claim_error("kinetic_conditions_required", claim_id)
+        if not near_quantity(quote, quantity.strip(), measurements(quote), qkind):
             return _claim_error("quantity_number_required", claim_id)
-        claim["quantity"] = quantity.strip()
-        claim["quantity_kind"] = quantity_kind(quantity)
+        claim["quantity"] = canonical_quantity(quantity)
+        claim["quantity_kind"] = qkind
         claim.update({key: value.strip() for key, value in fields.items()})
         claim["conditions"] = "、".join(claim[key] for key in ("dosage", "temperature", "method"))
     else:
@@ -692,6 +822,7 @@ def _judge_value(claim, sentence, experiment=""):
         claim["conditions"],
         enforce_conditions=False,
         accepted_dimensions=accepted_dimensions(claim["quantity_kind"]),
+        quantity_kind=claim["quantity_kind"],
     )
     status = compared["status"]
     quantity = claim["quantity"]
@@ -802,7 +933,7 @@ def _calculation_statement(claim, compared):
     )
 
 
-def _causal_notes(confirmed, claims):
+def _causal_notes(confirmed, claims, judgments=None):
     by_id = {claim["id"]: claim for claim in claims}
     metering_ids = []
     value_ids = []
@@ -822,6 +953,14 @@ def _causal_notes(confirmed, claims):
                 )
         elif claim["kind"] == "value":
             value_ids.append(claim["id"])
+    # 计量未单独成主张、但数值已证实错误时，也提示优先查配制
+    if not value_ids and judgments:
+        for item in judgments:
+            if item.get("status") != "contradicts":
+                continue
+            claim = by_id.get(item.get("claim_id"))
+            if claim and claim.get("kind") == "value":
+                value_ids.append(claim["id"])
     if not metering_ids or not value_ids:
         return []
     detail = "；".join(expected_bits)
@@ -842,6 +981,68 @@ def _causal_notes(confirmed, claims):
     ]
 
 
+def _relation_notes(frame, claims, judgments):
+    """按实验类先验检查报告内温度–k 关系等（辅助说明，不单独定罪）。"""
+    family = (frame or {}).get("family") or (frame or {}).get("legacy_family")
+    if family not in {"saponification", "alkaline_hydrolysis", "solution_kinetics"}:
+        return []
+    notes = []
+    value_claims = [c for c in claims if c.get("kind") == "value" and c.get("quantity_kind") == "rate"]
+    # 从主张条件解析摄氏度与 k
+    points = []
+    for claim in value_claims:
+        temp = claim.get("temperature") or ""
+        match = re.search(r"(\d+(?:\.\d+)?)", temp)
+        if not match:
+            continue
+        nums = measurements(claim.get("quote") or "")
+        rates = [item for item in nums if item.get("dimension") == "second_order_rate"]
+        if not rates:
+            continue
+        points.append((float(match.group(1)), float(rates[0]["number"]), claim["id"]))
+    if len(points) >= 2:
+        points.sort(key=lambda item: item[0])
+        low, high = points[0], points[-1]
+        if high[0] > low[0] + 0.5 and high[1] < low[1] * 0.95:
+            notes.append(
+                {
+                    "kind": "temperature_rate_relation",
+                    "claim_ids": [low[2], high[2]],
+                    "statement": (
+                        f"实验族先验：同测定方法下升温应使表观 k 增大；"
+                        f"报告中 {low[0]:g}℃ 的 k≈{low[1]:.4g}，"
+                        f"{high[0]:g}℃ 的 k≈{high[1]:.4g}，升温反而变小，"
+                        f"宜复核温度记录、拟合与单位（仍须文献证据支撑最终对错）。"
+                    ),
+                }
+            )
+    contradicted = [
+        item["claim_id"]
+        for item in judgments or []
+        if item.get("status") == "contradicts" and by_id_kind(claims, item.get("claim_id")) == "value"
+    ]
+    if contradicted and frame.get("understanding"):
+        notes.append(
+            {
+                "kind": "framed_value_mismatch",
+                "claim_ids": contradicted,
+                "statement": (
+                    f"{frame.get('understanding')} "
+                    "数值主张已与同反应同方法文献对照后证实偏差；"
+                    "请结合 expected_relations 排查拟合、单位与等浓度假设。"
+                ),
+            }
+        )
+    return notes
+
+
+def by_id_kind(claims, claim_id):
+    for claim in claims or []:
+        if claim.get("id") == claim_id:
+            return claim.get("kind")
+    return None
+
+
 _CLAIM_HINTS = {
     "dilution_missing_reported_concentration": "原句里找不到与 reported 一致的工作浓度，请把声明的工作浓度数字原样填入 reported。",
     "dilution_missing_stock_concentration": "原句需写出母液浓度，并且与工作浓度是两个不同的数字。",
@@ -854,10 +1055,14 @@ _CLAIM_HINTS = {
     "arrhenius_data_required": "原句需至少两组温度和对应速率常数，以及要核对的活化能数字。",
     "rate_law_data_required": "原句需有反应式、一个速率常数、足够浓度，以及要核对的反应速率数字。",
     "reported_required": "reported 必须是 quote 中出现的完整数字字符串。",
-    "kinetic_conditions_required": "数值主张的 dosage、temperature、method 都必须是 quote 里的短原文。",
-    "quantity_not_in_class": "quantity 只能是速率常数或活化能，且必须出现在 quote 中。",
-    "quantity_number_required": "quote 里 quantity 附近需要紧邻可解析的数字和单位。",
-    "candidate_required": "quote 必须来自 propose_candidates 返回的候选句，或传入对应的 candidate_id。",
+    "kinetic_conditions_required": "dosage、temperature 必须是 quote 里的短原文；method 可在报告全文（表格行常不含测定方法）。表格请用 propose_candidates 合并候选，勿自造跨行句子。",
+    "quantity_not_in_class": (
+        "数值主张的 quantity 允许「速率常数」或「活化能」（二者都可，不是只许活化能），"
+        "也可写原文中的 k、k(单位)、Ea；且该标记必须出现在同一段 quote 里。"
+        "若已有 recommended_claims，请改调 extract_recommended_claims，勿因本错误放弃速率常数。"
+    ),
+    "quantity_number_required": "quote 里 k/速率常数/活化能附近需要可解析的数字和单位（支持 k(L/mol/min)=5.193 这种表头写法）。",
+    "candidate_required": "quote 必须来自 propose_candidates 返回的候选句，或传入对应的 candidate_id；不要跨行自造拼接。",
 }
 
 
@@ -867,6 +1072,26 @@ def _claim_error(code, claim_id):
     if hint:
         item["hint"] = hint
     return None, item
+
+
+_METHOD_ALIASES = {
+    "电导法": ("电导", "conductivity", "conductance", "conductometric"),
+    "分光光度法": ("分光", "spectrophot"),
+    "停流法": ("停流", "stoppedflow", "stopped-flow"),
+}
+
+
+def _condition_in_text(compact_value, quote_compact, report_compact, method=False):
+    if compact_value in quote_compact or compact_value in report_compact:
+        return True
+    if not method:
+        return False
+    for name, aliases in _METHOD_ALIASES.items():
+        if compact_value not in {_compact(name), *( _compact(a) for a in aliases)}:
+            continue
+        markers = (_compact(name), *( _compact(a) for a in aliases))
+        return any(mark in quote_compact or mark in report_compact for mark in markers)
+    return False
 
 
 def _store_judgment(job, judgment):
@@ -981,8 +1206,10 @@ def _compact(text):
 TOOLS = {
     "read_report": read_report,
     "record_report": record_report,
+    "frame_experiment": frame_experiment,
     "propose_candidates": propose_candidates,
     "extract_claims": extract_claims,
+    "extract_recommended_claims": extract_recommended_claims,
     "search_references": search_references,
     "search_solution_kinetics": search_solution_kinetics,
     "search_enzyme_kinetics": search_enzyme_kinetics,
@@ -1029,8 +1256,24 @@ TOOL_SPECS = [
     {
         "type": "function",
         "function": {
+            "name": "frame_experiment",
+            "description": "读完报告后、检索前必做。完整判断报告在讲什么（report_about）、要核实什么（what_to_verify）、需要哪些文献（literature_needs）。未调用本工具不得 search_*。不直接判错。",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "propose_candidates",
-            "description": "程序扫描报告，枚举可核对的候选原句（value/method/calculation 标签与数字）。extract_claims 的 quote 必须落在这些候选句内，或传入 candidate_id。",
+            "description": "程序扫描报告，枚举可核对的候选原句；并返回 recommended_claims（已填好的速率常数主张草稿）。有 recommended_claims 时优先用 extract_recommended_claims 或原样交给 extract_claims。",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "extract_recommended_claims",
+            "description": "一键采纳 propose_candidates 返回的 recommended_claims（测得/文献速率常数短句）。表格 PDF 点选失败时优先调用本工具，不要空交 extract_claims。",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
@@ -1038,7 +1281,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "extract_claims",
-            "description": "从 propose_candidates 的候选句中点选主张。quote 必须落在候选句内，推荐同时给 candidate_id。核对速率常数、活化能、温度做法，以及配制计量与等浓度假设。value 还要给 dosage、temperature、method。calculation 的 expression 可以是 arrhenius、rate、dilution、stoichiometry，或普通算式。",
+            "description": "从 propose_candidates 的候选句中点选主张。若刚拿到 recommended_claims，可原样提交；也可先调用 extract_recommended_claims。quote 必须落在候选句内。value 还要给 dosage、temperature、method。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1052,7 +1295,10 @@ TOOL_SPECS = [
                                 "quote": {"type": "string", "description": "候选句中的连续原句"},
                                 "candidate_id": {"type": "string", "description": "propose_candidates 返回的候选编号"},
                                 "slot": {"type": "string", "description": "方法主张里被核对的做法，必须出现在 quote 中"},
-                                "quantity": {"type": "string", "description": "只能是速率常数或活化能，必须出现在 quote 中并紧邻数字"},
+                                "quantity": {
+                                    "type": "string",
+                                    "description": "允许「速率常数」或「活化能」（都可）；须出现在 quote 中并紧邻数字。也可写 k、k(单位)、Ea",
+                                },
                                 "dosage": {"type": "string", "description": "用量或浓度，必须是 quote 中的短原文"},
                                 "temperature": {"type": "string", "description": "温度条件，必须是 quote 中的短原文"},
                                 "method": {"type": "string", "description": "测定方法，必须是 quote 中的短原文"},
@@ -1083,7 +1329,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "search_references",
-            "description": "按一条主张检索公开网页；联网失败或无结果时回退到项目 reference_cache/ 本地缓存。claim_id 对应该主张。摘要不能直接用于判断，需要时调用 read_reference。溶液速率常数优先用 search_solution_kinetics，酶动力学优先用 search_enzyme_kinetics。",
+            "description": "按一条主张检索公开网页，并优先合并 reference_cache。碱水解/皂化等教学类主张应优先本工具（用 frame.search_plan.queries），不要先撞 NIST。酶反应再用 search_enzyme_kinetics；羟基自由基类才优先 search_solution_kinetics。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1099,7 +1345,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "search_solution_kinetics",
-            "description": "查询 NDRL/NIST 溶液动力学库。reactant 写反应物名称或化学式，solvent 可写溶剂。返回记录已是原文，用返回的 url 调用 select_evidence。库没有写明的用量、温度或测定方法仍然不可比。",
+            "description": "查询 NDRL/NIST 溶液动力学库。仅适合羟基自由基等研究向溶液动力学；碱水解/皂化教学类请改用 search_references（否则易命中自由基同名酯、不可比）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1198,7 +1444,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "finish_review",
-            "description": "汇总输入报告的判断。结果分成已证实的错误、文献支持、证据不足。计量主张与动力学数值同时出错时，程序会写入 causal_notes。请写 summary 概括主要问题和改进方向。文献彼此不一致时不把报告判错。",
+            "description": "汇总判断。须先做过 frame_experiment：summary 写清实验族理解→关系是否成立→证据结论。结果含 frame 摘要与 causal_notes。计量与数值同时出错时提示因果链。文献彼此不一致时不把报告判错。",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -2,6 +2,10 @@ import ast
 import re
 
 _NUMBER = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?![\d.])")
+_LABELED = re.compile(
+    r"([A-Za-z](?:\s*[A-Za-z0-9₀₁₂₃])*)\s*[（(]([^）)]{1,32})[）)]\s*[=＝:：]\s*"
+    r"(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+)
 _CONDITION_SPLIT = re.compile(r"[，,、；;。\s]+")
 _TOLERANCE = {
     "energy": 0.15,
@@ -26,11 +30,17 @@ _UNITS = [
     ("毫克每升", "mg/L", "mass_concentration", ("factor", 1.0)),
     ("mol/(l·s)", "mol/(L·s)", "reaction_rate", ("factor", 1.0)),
     ("mol/(l·min)", "mol/(L·min)", "reaction_rate", ("factor", 1.0 / 60.0)),
+    ("mol/l/s", "mol/(L·s)", "reaction_rate", ("factor", 1.0)),
+    ("mol/l/min", "mol/(L·min)", "reaction_rate", ("factor", 1.0 / 60.0)),
     ("mmol/l", "mmol/L", "molar_concentration", ("factor", 0.001)),
     ("mol/l", "mol/L", "molar_concentration", ("factor", 1.0)),
     ("摩尔每升", "mol/L", "molar_concentration", ("factor", 1.0)),
     ("l/(mol·s)", "L/(mol·s)", "second_order_rate", ("factor", 1.0)),
     ("l/(mol·min)", "L/(mol·min)", "second_order_rate", ("factor", 1.0 / 60.0)),
+    ("l/mol/s", "L/(mol·s)", "second_order_rate", ("factor", 1.0)),
+    ("l/mol/min", "L/(mol·min)", "second_order_rate", ("factor", 1.0 / 60.0)),
+    ("l/mol·s", "L/(mol·s)", "second_order_rate", ("factor", 1.0)),
+    ("l/mol·min", "L/(mol·min)", "second_order_rate", ("factor", 1.0 / 60.0)),
     ("l·mol^-1·s^-1", "L/(mol·s)", "second_order_rate", ("factor", 1.0)),
     ("l·mol^-1·min^-1", "L/(mol·min)", "second_order_rate", ("factor", 1.0 / 60.0)),
     ("min^-1", "min^-1", "frequency", ("factor", 1.0 / 60.0)),
@@ -46,6 +56,8 @@ _UNITS = [
     ("k", "K", "temperature", ("affine", 1.0, 0.0)),
     ("%", "%", "fraction", ("factor", 0.01)),
 ]
+_RATE_ANCHOR = re.compile(r"速率常数|rate\s*constant|(?<![A-Za-z])k(?=\s*[（(=：:])", re.I)
+_ENERGY_ANCHOR = re.compile(r"活化能|activation\s*energy|(?<![A-Za-z])e_?a(?=\s*[（(=：:])", re.I)
 
 
 def number_tokens(text):
@@ -53,42 +65,51 @@ def number_tokens(text):
 
 
 def measurements(text):
+    text = text or ""
     found = []
-    for match in _NUMBER.finditer(text or ""):
+    seen = set()
+    for match in _NUMBER.finditer(text):
         unit = _unit_at(text[match.end() :])
         if unit is None:
             continue
-        canonical, dimension, spec = unit
-        value = float(match.group(1))
-        found.append(
-            {
-                "number": match.group(1),
-                "start": match.start(),
-                "end": match.end(),
-                "unit": canonical,
-                "dimension": dimension,
-                "base": _to_base(value, spec),
-                "approximate": _approximate(text, match.start()),
-            }
-        )
+        item = _measurement(text, match.group(1), match.start(), match.end(), unit)
+        key = (item["start"], item["end"], item["unit"])
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(item)
+    for match in _LABELED.finditer(text):
+        unit = _unit_lookup(match.group(2))
+        if unit is None:
+            continue
+        number = match.group(3)
+        start = match.start(3)
+        end = match.end(3)
+        item = _measurement(text, number, start, end, unit)
+        key = (item["start"], item["end"], item["unit"])
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(item)
+    found.sort(key=lambda item: item["start"])
     return found
 
 
-def near_quantity(text, quantity, items):
-    places = _find_all(text, quantity)
+def near_quantity(text, quantity, items, quantity_kind=None):
+    places = quantity_places(text, quantity, quantity_kind)
     if not places:
         return []
     picked = []
     for item in items:
-        after = min(item["start"] - (place + len(quantity)) for place in places)
+        after = min(item["start"] - place for place in places)
         before = min(place - item["end"] for place in places)
-        if 0 <= after <= 24 or 0 <= before <= 24:
+        if 0 <= after <= 40 or 0 <= before <= 24:
             picked.append(item)
     return picked
 
 
-def closest(text, quantity, items):
-    places = _find_all(text, quantity)
+def closest(text, quantity, items, quantity_kind=None):
+    places = quantity_places(text, quantity, quantity_kind)
     if not items or not places:
         return None
 
@@ -96,6 +117,21 @@ def closest(text, quantity, items):
         return min(abs(item["start"] - place) for place in places)
 
     return min(items, key=distance)
+
+
+def quantity_places(text, quantity, quantity_kind=None):
+    text = text or ""
+    places = []
+    if quantity:
+        places.extend(_find_all(text, quantity))
+    pattern = None
+    if quantity_kind == "rate":
+        pattern = _RATE_ANCHOR
+    elif quantity_kind == "activation_energy":
+        pattern = _ENERGY_ANCHOR
+    if pattern is not None:
+        places.extend(match.start() for match in pattern.finditer(text))
+    return sorted(set(places))
 
 
 def tolerance(dimension, approximate):
@@ -113,18 +149,28 @@ def conditions_covered(conditions, evidence):
     return all(_compact(token) in compact_evidence for token in tokens)
 
 
-def compare_quantity(report_text, evidence_text, quantity, conditions, enforce_conditions=True, accepted_dimensions=()):
-    reported_items = near_quantity(report_text, quantity, measurements(report_text))
-    evidence_items = near_quantity(evidence_text, quantity, measurements(evidence_text))
+def compare_quantity(
+    report_text,
+    evidence_text,
+    quantity,
+    conditions,
+    enforce_conditions=True,
+    accepted_dimensions=(),
+    quantity_kind=None,
+):
+    reported_items = near_quantity(report_text, quantity, measurements(report_text), quantity_kind)
+    evidence_items = near_quantity(evidence_text, quantity, measurements(evidence_text), quantity_kind)
     if not evidence_items and accepted_dimensions:
         evidence_items = [item for item in measurements(evidence_text) if item["dimension"] in accepted_dimensions]
+    if not reported_items and accepted_dimensions:
+        reported_items = [item for item in measurements(report_text) if item["dimension"] in accepted_dimensions]
     if not reported_items:
         return {"status": "not_enough", "reason": "reported_number_missing"}
     if not evidence_items:
         return {"status": "not_enough", "reason": "reference_number_missing"}
     if enforce_conditions and not conditions_covered(conditions, evidence_text):
         return {"status": "not_comparable", "reason": "conditions"}
-    reported = closest(report_text, quantity, reported_items)
+    reported = closest(report_text, quantity, reported_items, quantity_kind)
     refs = [item for item in evidence_items if item["dimension"] == reported["dimension"]]
     if not refs:
         return {"status": "not_comparable", "reason": "incompatible_units"}
@@ -134,7 +180,9 @@ def compare_quantity(report_text, evidence_text, quantity, conditions, enforce_c
     low, high = min(bases), max(bases)
     if low <= reported["base"] <= high:
         gap = 0.0
-        reference = closest(evidence_text, quantity, refs) or min(refs, key=lambda item: abs(item["base"] - reported["base"]))
+        reference = closest(evidence_text, quantity, refs, quantity_kind) or min(
+            refs, key=lambda item: abs(item["base"] - reported["base"])
+        )
         status = "supports"
     else:
         endpoint = low if reported["base"] < low else high
@@ -193,15 +241,47 @@ def calculation_status(computed, reported):
 
 
 def _unit_at(rest):
-    folded = rest.lstrip().casefold()
+    folded = (rest or "").lstrip().casefold()
     for prefix, canonical, dimension, spec in _UNITS:
-        if not folded.startswith(prefix):
+        for needle in (prefix, prefix.replace("·", "/")):
+            if not folded.startswith(needle):
+                continue
+            after = folded[len(needle) :]
+            # 避免把 k(L/mol/min) 里的 k 误当成开尔文
+            if needle == "k" and after[:1] in {"(", "（", "=", "＝", ":", "："}:
+                continue
+            if after[:1] and after[0].isascii() and after[0].isalnum():
+                continue
+            return canonical, dimension, spec
+    return None
+
+
+def _unit_lookup(token):
+    folded = (token or "").strip().casefold().replace(" ", "")
+    folded = folded.replace("·", "/").replace("•", "/").replace("⋅", "/")
+    for prefix, canonical, dimension, spec in _UNITS:
+        needle = prefix.replace("·", "/")
+        if folded != needle and not folded.startswith(needle):
             continue
-        after = folded[len(prefix) :]
-        if after[:1] and after[0].isascii() and after[0].isalnum():
-            continue
+        if folded != needle:
+            after = folded[len(needle) :]
+            if after[:1] and after[0].isascii() and after[0].isalnum():
+                continue
         return canonical, dimension, spec
     return None
+
+
+def _measurement(text, number, start, end, unit):
+    canonical, dimension, spec = unit
+    return {
+        "number": number,
+        "start": start,
+        "end": end,
+        "unit": canonical,
+        "dimension": dimension,
+        "base": _to_base(float(number), spec),
+        "approximate": _approximate(text, start),
+    }
 
 
 def _to_base(value, spec):
